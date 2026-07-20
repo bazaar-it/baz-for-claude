@@ -45,19 +45,20 @@
   #videoWrap {
     flex: 1;
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: center;
     min-height: 0;
-    padding: 14px 20px;
+    padding: 0;
     position: relative;
     background: var(--stage);
+    overflow: hidden;
   }
   video {
     max-width: 100%;
     max-height: 100%;
     background: #000;
-    border-radius: 8px;
     outline: none;
+    display: block;
   }
   #empty {
     color: var(--dimmer);
@@ -272,8 +273,11 @@
   /* Stage sizes to its content so the transport sits directly under the video
      instead of being pushed to the bottom of the window. */
   body.wide #stage { flex: 0 0 auto; min-height: 0; }
-  body.wide #videoWrap { flex: 0 0 auto; padding: 12px 18px 8px; }
-  body.wide video { max-height: 62vh; }
+  /* Landscape: fill the full window width, edge to edge — the video's height
+     follows, so it touches all four sides with no letterbox. Capped so the
+     transport stays on-screen; only extreme aspects hit the cap. */
+  body.wide #videoWrap { flex: 0 0 auto; padding: 0; }
+  body.wide video { width: 100%; height: auto; max-height: 82vh; }
   body.wide #side {
     width: 100%;
     height: auto;

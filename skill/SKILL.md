@@ -43,7 +43,7 @@ tail -n 0 -F <tmp>/baz-for-claude/<port>/notes.log
 Do NOT poll on a timer — the tail costs ~1MB and pushes events to you.
 
 ```
-[NOTE] f510 | 00:17.00 | proj 4d649aa5 | scene "sc04c-card" 3b67a67f +103f
+[NOTE] f510 | 00:17.00 | proj a1b2c3d4 | scene "sc04-card" 3f8b4993 +103f
        | under: sc05-typing(t0), sc00-audio(t1)
        | shot …/frames/f00510-abc.png
        | STALE EXPORT (timeline 50.80s vs video 48.92s)

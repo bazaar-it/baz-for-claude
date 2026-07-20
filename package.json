@@ -4,7 +4,7 @@
   "description": "Frame-accurate video feedback for AI coding agents. Pause a hosted video, type a note, and it lands in your agent's context with the exact frame number and a still of that frame.",
   "type": "module",
   "bin": {
-    "baz-for-claude": "./server.mjs"
+    "baz-for-claude": "server.mjs"
   },
   "files": [
     "server.mjs",

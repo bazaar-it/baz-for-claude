@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>bazframe</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif:ital@1&display=swap');
+
+  :root {
+    /* baz.studio — cream + aurora green */
+    --bg: #F0EBE0;
+    --panel: #F5F1E8;
+    --panel-2: #E7E1D4;
+    --field: #FCFAF6;
+    --line: rgba(10, 10, 10, .13);
+    --text: #0A0A0A;
+    --dim: #6B655B;           /* 4.9:1 on cream */
+    --dimmer: #7A7265;        /* 4.0:1 — small labels stay legible on cream */
+    --accent: #5FD394;        /* fill only — too light to read as text on cream */
+    --accent-grad: linear-gradient(135deg, #7BE5A4 0%, #5FD394 100%);
+    --accent-ink: #166B44;    /* readable green text on cream — 5.5:1 */
+    --warm: #C4552C;
+    --stage: #17191D;         /* dark mat: the video must be judged on neutral */
+    --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    display: flex;
+    overflow: hidden;
+  }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* ---------- stage ---------- */
+  #stage {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  #videoWrap {
+    flex: 1;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    min-height: 0;
+    padding: 14px 20px;
+    position: relative;
+    background: var(--stage);
+  }
+  video {
+    max-width: 100%;
+    max-height: 100%;
+    background: #000;
+    border-radius: 8px;
+    outline: none;
+  }
+  #empty {
+    color: var(--dimmer);
+    text-align: center;
+    font-size: 14px;
+    line-height: 2;
+  }
+  #empty kbd { font-size: 12px; }
+
+  /* Stale-export warning, shrunk to a chip so it costs no vertical space.
+     Full detail lives in the tooltip. */
+  #staleChip {
+    display: none;
+    background: rgba(212,98,58,.18);
+    border: 1px solid rgba(212,98,58,.5);
+    color: #f0a488;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  #staleChip:hover { background: rgba(212,98,58,.3); border-color: rgba(212,98,58,.8); }
+  #staleChip:disabled { opacity: .6; cursor: default; }
+
+  /* frame flash on capture */
+  #flash {
+    position: absolute; inset: 0;
+    background: var(--accent);
+    opacity: 0; pointer-events: none;
+    transition: opacity .18s;
+    border-radius: 10px;
+  }
+  #flash.on { opacity: .22; transition: none; }
+
+  /* ---------- transport ---------- */
+  #transport {
+    padding: 10px 20px 14px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    flex-shrink: 0;
+    position: relative; /* anchor for the settings popover */
+  }
+
+  /* Wordmark, kept quiet — present but never competing with the readout. */
+  #wordmark {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: 16px;
+    color: var(--text);
+    opacity: .42;
+    letter-spacing: .01em;
+    user-select: none;
+    white-space: nowrap;
+  }
+  #gear {
+    padding: 4px 9px;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--dim);
+  }
+  #settings {
+    display: none;
+    position: absolute;
+    right: 20px;
+    top: calc(100% - 6px);
+    width: 340px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 13px 14px 14px;
+    box-shadow: 0 14px 40px rgba(10,10,10,.18);
+    z-index: 40;
+  }
+  #settings.open { display: block; }
+  #settings h2 {
+    margin: 0 0 9px;
+    font-size: 10px; font-weight: 600;
+    letter-spacing: .1em; text-transform: uppercase;
+    color: var(--dimmer);
+  }
+  #scrub {
+    position: relative;
+    height: 26px;
+    background: var(--panel-2);
+    border-radius: 999px;
+    cursor: grab;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    touch-action: none;
+    user-select: none;
+  }
+  #scrub.dragging { cursor: grabbing; }
+  /* Scene boundaries as hairlines — orientation without clutter. */
+  .tick {
+    position: absolute; top: 0; bottom: 0;
+    width: 1px;
+    background: rgba(10,10,10,.13);
+    pointer-events: none;
+  }
+  #played {
+    position: absolute; top: 0; bottom: 0; left: 0;
+    background: var(--accent-grad);
+    opacity: .55;
+    pointer-events: none;
+  }
+  #head {
+    position: absolute; top: 0; bottom: 0;
+    width: 2px; margin-left: -1px;
+    background: var(--accent-ink);
+    pointer-events: none;
+  }
+  #head::after {
+    content: '';
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 13px; height: 13px;
+    transform: translate(-50%, -50%);
+    background: var(--accent-grad);
+    border: 1.5px solid var(--accent-ink);
+    border-radius: 50%;
+    box-shadow: 0 1px 4px rgba(10,10,10,.25);
+  }
+  #scrub.dragging #head::after { width: 16px; height: 16px; }
+  /* One row: play left, scrubber taking the middle, timecode hard right. */
+  #transportRow {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  #transportRow #scrub { flex: 1; min-width: 0; }
+
+  #metaRow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 9px;
+    min-height: 22px;
+  }
+  button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 11px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: #DED7C8; border-color: rgba(10,10,10,.24); }
+  button:active { transform: translateY(1px); }
+  #play { width: 44px; font-size: 14px; }
+  .readout {
+    font-family: var(--mono);
+    /* tabular figures — otherwise the digits jitter as the video plays */
+    font-variant-numeric: tabular-nums;
+    font-size: 21px;
+    font-weight: 500;
+    letter-spacing: -.025em;
+    color: var(--text);
+    flex-shrink: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+  }
+  .readout .sub {
+    color: var(--dimmer);
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+  .spacer { flex: 1; }
+  .hint { color: var(--dimmer); font-size: 11px; }
+  .hint kbd {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 5px; font-size: 10px;
+    font-family: ui-monospace, monospace;
+  }
+  #sceneNow {
+    color: var(--accent-ink); font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0; max-width: 320px;
+  }
+  #sceneNow .id { color: var(--dimmer); }
+  @media (max-width: 1200px) {
+    #side { width: 320px; }
+    .hint { display: none; }
+  }
+
+  /* ---------- sidebar ---------- */
+  #side {
+    width: 390px;
+    flex-shrink: 0;
+    border-left: 1px solid var(--line);
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .sec { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .sec h2 {
+    margin: 0 0 9px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--dimmer);
+  }
+  input, textarea {
+    width: 100%;
+    background: var(--field);
+    border: 1px solid var(--line);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font: inherit;
+    resize: none;
+  }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent-ink); }
+  input { margin-bottom: 7px; font-size: 12px; }
+  /* Composer: one full-width rounded field, actions tucked bottom-right. */
+  #inputBox {
+    background: var(--field);
+    border: 1px solid var(--line);
+    border-radius: 15px;
+    padding: 12px 13px 9px;
+    transition: border-color .14s, box-shadow .14s;
+  }
+  #inputBox:focus-within {
+    border-color: var(--accent-ink);
+    box-shadow: 0 0 0 3px rgba(22,107,68,.11);
+  }
+  #composer {
+    min-height: 58px;
+    line-height: 1.45;
+    border: none;
+    background: none;
+    padding: 0;
+    border-radius: 0;
+  }
+  #composer:focus { outline: none; border: none; box-shadow: none; }
+  #inputBar {
+    display: flex; align-items: center; gap: 7px;
+    margin-top: 7px;
+  }
+  #metaText {
+    font-size: 11px; color: var(--dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0;
+  }
+  #inputBar .spacer { flex: 1; }
+
+  .iconBtn {
+    width: 30px; height: 30px;
+    flex-shrink: 0;
+    padding: 0;
+    border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 13px; line-height: 1;
+  }
+  .iconBtn.primary {
+    background: var(--accent-grad);
+    border-color: transparent;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 700;
+  }
+  .iconBtn.primary:hover {
+    background: linear-gradient(135deg, #8CEDB1 0%, #6ADDA0 100%);
+    border-color: transparent;
+  }
+  .iconBtn.primary:disabled { opacity: .4; cursor: default; }
+  #notesPane { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  #notes { flex: 1; overflow-y: auto; padding: 6px 0 20px; min-height: 0; }
+
+  /* ---------- landscape: panel drops below so the video gets full width ----------
+     The transport stays welded to the player; only the feedback panel moves. */
+  body.wide { flex-direction: column; }
+  /* Stage sizes to its content so the transport sits directly under the video
+     instead of being pushed to the bottom of the window. */
+  body.wide #stage { flex: 0 0 auto; min-height: 0; }
+  body.wide #videoWrap { flex: 0 0 auto; padding: 12px 18px 8px; }
+  body.wide video { max-height: 62vh; }
+  body.wide #side {
+    width: 100%;
+    height: auto;
+    flex: 1 1 auto;      /* absorb everything below the transport */
+    min-height: 200px;
+    flex-direction: column;
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+  /* Composer spans the full width; notes scroll beneath it. */
+  body.wide .sec { border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  body.wide #notesPane { flex: 1 1 auto; min-height: 0; }
+  body.wide #notes { padding-top: 6px; }
+  body.wide #sceneNow { max-width: 420px; flex-basis: auto; }
+  .note {
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(10,10,10,.09);
+    display: flex; gap: 10px;
+  }
+  .note img {
+    width: 46px; border-radius: 4px; flex-shrink: 0;
+    background: #000; cursor: pointer; border: 1px solid var(--line);
+  }
+  .note .body { min-width: 0; flex: 1; }
+  .note .tc { color: var(--accent-ink); font-size: 11px; }
+  .note .sc { color: var(--dimmer); font-size: 10px; }
+  .copyBtn {
+    width: 28px; height: 28px;
+    flex-shrink: 0;
+    align-self: center;
+    padding: 0;
+    border-radius: 7px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; line-height: 1;
+    color: var(--dim);
+  }
+  .copyBtn:hover { color: var(--accent-ink); border-color: var(--accent-ink); }
+  .note .tx { margin-top: 3px; word-wrap: break-word; font-size: 12px; }
+  #notesEmpty { padding: 18px 16px; color: var(--dimmer); font-size: 12px; }
+
+  /* lightbox */
+  #box {
+    position: fixed; inset: 0; background: rgba(0,0,0,.88);
+    display: none; align-items: center; justify-content: center; z-index: 50;
+    cursor: zoom-out;
+  }
+  #box.on { display: flex; }
+  #box img { max-width: 92%; max-height: 92%; border-radius: 8px; }
+
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--accent-grad); color: var(--text); font-weight: 600;
+    padding: 8px 16px; border-radius: 999px; font-size: 12px;
+    opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 60;
+  }
+  #toast.on { opacity: 1; }
+  #toast.err { background: var(--warm); color: #fff; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="videoWrap">
+    <div id="empty">
+      Paste a hosted video URL in the panel →<br />
+      <span style="font-size:12px">then <kbd>space</kbd> to play, <kbd>←</kbd> <kbd>→</kbd> to step frames</span>
+    </div>
+    <video id="v" playsinline preload="auto" style="display:none"></video>
+    <div id="flash"></div>
+  </div>
+
+  <div id="transport">
+    <div id="transportRow">
+      <button id="play">▶</button>
+      <div id="scrub">
+        <div id="played"></div>
+        <div id="head" style="left:0"></div>
+      </div>
+      <div class="readout">
+        <span id="tc">00:00.00</span>
+        <span class="sub">f<span id="fr">0</span></span>
+      </div>
+    </div>
+
+    <div id="metaRow">
+      <div id="sceneNow"></div>
+      <button id="staleChip" title="">⚠ stale — pull latest</button>
+      <div class="spacer"></div>
+      <div class="hint">
+        <kbd>space</kbd> play &nbsp; <kbd>←</kbd><kbd>→</kbd> frame &nbsp;
+        <kbd>⇧</kbd> ×10 &nbsp; <kbd>f</kbd> note &nbsp; <kbd>⌘↵</kbd> send
+      </div>
+      <span id="wordmark">baz.studio</span>
+      <button id="gear" title="Source settings">⚙</button>
+    </div>
+
+    <div id="settings">
+      <h2>Source</h2>
+      <input id="url" placeholder="https://… hosted export URL" spellcheck="false" />
+      <input id="project" placeholder="baz project id (optional — adds scene names)" spellcheck="false" />
+      <button id="load" style="width:100%">Load</button>
+      <button id="pullLatest" style="width:100%; margin-top:7px">↻ Pull latest export</button>
+    </div>
+  </div>
+</div>
+
+<div id="side">
+  <div class="sec" id="composerSec">
+    <div id="inputBox">
+      <textarea id="composer" placeholder="What's wrong at this frame?"></textarea>
+      <div id="inputBar">
+        <span id="metaText" class="mono">—</span>
+        <span class="spacer"></span>
+        <button id="copyFrame" class="iconBtn" title="Copy this frame as an image">⧉</button>
+        <button id="send" class="iconBtn primary" disabled title="Send  (⌘↵)">↑</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="notesPane">
+    <div id="notesEmpty">No notes yet.</div>
+    <div id="notes"></div>
+  </div>
+</div>
+
+<div id="box"><img id="boxImg" alt="" /></div>
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const v = $('v');
+
+let S = { url: '', project: '', fps: 30, scenes: [], thumbs: true };
+let duration = 0;
+
+// ------------------------------------------------------------- utils
+const tcOf = (sec) => {
+  const m = Math.floor(sec / 60);
+  return String(m).padStart(2, '0') + ':' + (sec - m * 60).toFixed(2).padStart(5, '0');
+};
+const frameOf = (sec) => Math.round(sec * S.fps);
+
+// Every scene alive at `sec`, most-specific first. Higher track = on top, except
+// scenes spanning nearly the whole video (audio beds, full-length backgrounds) —
+// those sit on upper tracks but are never what you're pointing at.
+// `spanning` is precomputed by prepScenes(); this runs on every painted frame.
+function activeScenes(sec) {
+  return S.scenes
+    .filter((s) => sec >= s.start && sec < s.start + s.duration)
+    .sort((a, b) => Number(a.spanning) - Number(b.spanning) || b.track - a.track);
+}
+const sceneAt = (sec) => activeScenes(sec)[0] || null;
+
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'on' + (isErr ? ' err' : '');
+  clearTimeout(t._t);
+  t._t = setTimeout(() => (t.className = ''), 2200);
+}
+
+// ------------------------------------------------------------- session
+async function loadSession() {
+  S = await (await fetch('/api/session')).json();
+  prepScenes();
+  $('url').value = S.url || '';
+  $('project').value = S.project || '';
+  if (S.url) attach(S.url);
+  drawScenes();
+  loadNotes();
+}
+
+async function saveSession(url, project) {
+  const r = await fetch('/api/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, project }),
+  });
+  S = { ...S, ...(await r.json()) };
+  prepScenes();
+  drawScenes();
+}
+
+function attach(url) {
+  // Proxied so the <video> is same-origin — that's what makes canvas frame
+  // capture possible. Bytes stream through; nothing is stored.
+  v.src = '/stream?u=' + encodeURIComponent(url);
+  v.style.display = '';
+  $('empty').style.display = 'none';
+  v.load();
+}
+
+// ------------------------------------------------------------- settings menu
+$('gear').onclick = (e) => {
+  e.stopPropagation();
+  $('settings').classList.toggle('open');
+};
+document.addEventListener('click', (e) => {
+  if (!$('settings').contains(e.target) && e.target !== $('gear')) {
+    $('settings').classList.remove('open');
+  }
+});
+
+/**
+ * Pull the newest completed export for this project and reload.
+ * Does NOT render anything — if the newest export is still older than the last
+ * scene edit, it says so and leaves re-rendering to you.
+ */
+async function pullLatest(btn) {
+  if (!S.project) return toast('Set a project id first', true);
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⟳ checking…';
+  try {
+    const r = await fetch('/api/refresh', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'refresh failed');
+    S = { ...S, ...d };
+    prepScenes();
+    $('url').value = S.url || '';
+    if (d.changed) {
+      attach(S.url); // loadedmetadata re-runs drawScenes + checkDrift
+      toast('Pulled a newer export');
+    } else {
+      drawScenes();
+      checkDrift();
+      toast(d.latest ? 'Already the newest export — re-render to realign' : 'No completed export found', true);
+    }
+  } catch (err) {
+    toast('Refresh failed: ' + err.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+$('staleChip').onclick = () => pullLatest($('staleChip'));
+$('pullLatest').onclick = () => pullLatest($('pullLatest'));
+
+$('load').onclick = async () => {
+  const url = $('url').value.trim();
+  const project = $('project').value.trim();
+  if (!url) return toast('Need a URL', true);
+  await saveSession(url, project);
+  attach(url);
+  $('settings').classList.remove('open');
+  toast(S.scenes.length ? `Loaded — ${S.scenes.length} scenes` : 'Loaded');
+};
+
+// ------------------------------------------------------------- scene rail
+function drawScenes() {
+  document.querySelectorAll('.tick').forEach((e) => e.remove());
+  if (!S.scenes.length || !duration) return;
+  const scrub = $('scrub');
+  // Mark boundaries of the spine — the track carrying the most scenes. That's
+  // the main sequence; the top-most track would be a lone overlay instead.
+  const counts = {};
+  S.scenes.forEach((s) => (counts[s.track] = (counts[s.track] || 0) + 1));
+  const spine = Object.keys(counts).sort(
+    (a, b) => counts[b] - counts[a] || Number(a) - Number(b)
+  )[0];
+  S.scenes
+    .filter((s) => String(s.track) === String(spine) && s.start > 0)
+    .forEach((s) => {
+      const d = document.createElement('div');
+      d.className = 'tick';
+      d.style.left = (s.start / duration) * 100 + '%';
+      scrub.appendChild(d);
+    });
+}
+
+// ------------------------------------------------------------- playhead
+// Precomputed once per scene load, NOT per paint — paint runs per frame.
+function prepScenes() {
+  const total = S.scenes.reduce((m, s) => Math.max(m, s.start + s.duration), 0);
+  S.timeline = total;
+  S.scenes.forEach((s) => { s.spanning = total > 0 && s.duration >= total * 0.95; });
+  lastPaintedFrame = -1;
+}
+
+let lastPaintedFrame = -1;
+
+function paint(mediaTime) {
+  const t = mediaTime ?? v.currentTime ?? 0;
+  // Nothing on screen changes within a frame — skip sub-frame repaints.
+  const f = frameOf(t);
+  if (f === lastPaintedFrame) return;
+  lastPaintedFrame = f;
+  window.__paints = (window.__paints || 0) + 1; // perf counter, visible in devtools
+  $('tc').textContent = tcOf(t);
+  $('fr').textContent = frameOf(t);
+  const pct = duration ? (t / duration) * 100 : 0;
+  $('head').style.left = pct + '%';
+  $('played').style.width = pct + '%';
+
+  const act = activeScenes(t);
+  const sc = act[0] || null;
+  const extra = act.length - 1;
+  $('sceneNow').innerHTML = sc
+    ? `${sc.name} <span class="id">· ${sc.id.slice(0, 8)} · +${Math.round((t - sc.start) * S.fps)}f` +
+      (extra > 0 ? ` · +${extra} layer${extra > 1 ? 's' : ''}` : '') + `</span>`
+    : '';
+  $('metaText').textContent = `f${frameOf(t)} · ${tcOf(t)}` + (sc ? ` · ${sc.name}` : '');
+}
+
+// Event-driven painting — NO permanent interval. rVFC fires only when a video
+// frame is actually presented (zero cost while paused), and metadata.mediaTime
+// is the true presented-frame time, more exact than currentTime. With 12 tabs
+// open, idle CPU here is the difference between a warm laptop and a hot one.
+if (v.requestVideoFrameCallback) {
+  const cb = (_now, meta) => { paint(meta.mediaTime); v.requestVideoFrameCallback(cb); };
+  v.requestVideoFrameCallback(cb);
+} else {
+  setInterval(() => { if (!v.paused) paint(); }, 100); // ancient-browser fallback
+}
+// Paused-state updates (seeks, steps, load) come from events, not polling.
+['loadedmetadata', 'seeked', 'pause', 'play', 'timeupdate'].forEach((ev) =>
+  v.addEventListener(ev, () => paint())
+);
+
+v.addEventListener('loadedmetadata', () => {
+  duration = v.duration;
+  // Landscape gets the full window width — the feedback panel moves underneath.
+  document.body.classList.toggle('wide', v.videoWidth > v.videoHeight);
+  lastPaintedFrame = -1; // same frame number, possibly a different video now
+  drawScenes();
+  paint();
+  checkDrift();
+});
+
+// If the export predates the latest scene edits, every marker is off. Warn
+// rather than let feedback get pinned to the wrong scene.
+function checkDrift() {
+  const chip = $('staleChip');
+  const timeline = S.scenes.reduce((m, s) => Math.max(m, s.start + s.duration), 0);
+  if (!timeline || !duration || Math.abs(timeline - duration) <= 0.2) {
+    chip.style.display = 'none';
+    return;
+  }
+  // Explicit value — '' would fall back to the stylesheet's display:none.
+  chip.style.display = 'inline-block';
+  chip.title =
+    `Scene map is ${(timeline - duration).toFixed(2)}s off this video ` +
+    `(timeline ${timeline.toFixed(2)}s vs video ${duration.toFixed(2)}s). ` +
+    `The export predates the latest scene edits, so scene names may be wrong — ` +
+    `frame numbers and timecodes are still exact. Re-export to realign.`;
+}
+v.addEventListener('play', () => ($('play').textContent = '❚❚'));
+v.addEventListener('pause', () => ($('play').textContent = '▶'));
+v.addEventListener('error', () => toast('Could not load video', true));
+
+const togglePlay = () => (v.paused ? v.play() : v.pause());
+$('play').onclick = togglePlay;
+v.addEventListener('click', togglePlay);
+v.style.cursor = 'pointer';
+
+// Drag-scrub. Pointer capture keeps tracking even when the cursor leaves the bar,
+// and playback resumes afterwards if it was running when the drag started.
+let scrubbing = false;
+let resumeAfterScrub = false;
+
+function seekFromPointer(e) {
+  const r = $('scrub').getBoundingClientRect();
+  const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  v.currentTime = pct * duration;
+  paint(); // head tracks the pointer immediately, not on the next decoded frame
+}
+
+$('scrub').addEventListener('pointerdown', (e) => {
+  if (!duration) return;
+  scrubbing = true;
+  resumeAfterScrub = !v.paused;
+  v.pause();
+  $('scrub').classList.add('dragging');
+  $('scrub').setPointerCapture(e.pointerId);
+  seekFromPointer(e);
+});
+
+$('scrub').addEventListener('pointermove', (e) => {
+  if (scrubbing) seekFromPointer(e);
+});
+
+function endScrub(e) {
+  if (!scrubbing) return;
+  scrubbing = false;
+  $('scrub').classList.remove('dragging');
+  try { $('scrub').releasePointerCapture(e.pointerId); } catch { /* already released */ }
+  if (resumeAfterScrub) v.play();
+}
+$('scrub').addEventListener('pointerup', endScrub);
+$('scrub').addEventListener('pointercancel', endScrub);
+
+function step(frames) {
+  if (!duration) return;
+  v.pause();
+  // Nudge just past the frame boundary so the decoder lands on the frame we mean.
+  const target = (frameOf(v.currentTime) + frames) / S.fps + 1e-4;
+  v.currentTime = Math.max(0, Math.min(duration - 1e-3, target));
+  paint();
+}
+
+// ------------------------------------------------------------- capture + send
+function grabFrame() {
+  if (!S.thumbs || !v.videoWidth) return null;
+  const long = Math.max(v.videoWidth, v.videoHeight);
+  const scale = Math.min(1, 900 / long);
+  const c = document.createElement('canvas');
+  c.width = Math.round(v.videoWidth * scale);
+  c.height = Math.round(v.videoHeight * scale);
+  c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+  try {
+    return c.toDataURL('image/png');
+  } catch {
+    return null; // tainted canvas — note still goes through, just without the still
+  }
+}
+
+/**
+ * The paste-into-Claude form of a note. Includes the frame image's PATH rather
+ * than the image itself — Claude Code can read that file directly, which beats
+ * pasting a picture (and text + image can't share one clipboard write anyway).
+ */
+function noteBlock(n) {
+  const L = [`Video feedback — frame ${n.frame} (${n.timecode})`];
+  if (n.project) L.push(`project: ${n.project}`);
+  if (n.scene) L.push(`scene: ${n.scene.name} (${n.scene.id}) +${n.scene.frameInScene}f`);
+  const under = (n.layers || []).slice(1);
+  if (under.length) L.push(`under: ${under.map((l) => `${l.name} (t${l.track})`).join(', ')}`);
+  if (n.frameImage) L.push(`frame image: ${n.frameImage}`);
+  if (n.sceneMapStale) {
+    const s = n.sceneMapStale;
+    L.push(`NOTE: stale export — scene names unreliable (timeline ${s.timelineDuration.toFixed(2)}s vs video ${s.videoDuration.toFixed(2)}s)`);
+  }
+  return L.join('\n') + '\n\n' + n.note;
+}
+
+/** The async clipboard API needs focus + permission; fall back to the old path. */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;top:0;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function copyFrameImage() {
+  if (!v.videoWidth) return toast('No frame loaded', true);
+  v.pause();
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth;
+  c.height = v.videoHeight;
+  c.getContext('2d').drawImage(v, 0, 0);
+  try {
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    toast(`Frame ${frameOf(v.currentTime)} copied — paste it anywhere`);
+  } catch (err) {
+    toast('Image copy failed: ' + err.message, true);
+  }
+}
+
+$('copyFrame').onclick = copyFrameImage;
+
+async function sendNote() {
+  const text = $('composer').value.trim();
+  if (!text) return;
+  v.pause();
+  const time = v.currentTime;
+  const thumb = grabFrame();
+
+  $('flash').classList.add('on');
+  setTimeout(() => $('flash').classList.remove('on'), 20);
+
+  try {
+    const r = await fetch('/api/note', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: text, time, thumb, videoDuration: duration }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'failed');
+
+    // Belt and braces: the note streams to Claude Code, and lands on the
+    // clipboard so it's still usable if nothing is watching on the other end.
+    const copied = await copyText(noteBlock(data.note));
+
+    $('composer').value = '';
+    $('send').disabled = true;
+    toast(copied ? 'Sent to Claude + copied to clipboard' : 'Sent to Claude');
+    loadNotes();
+  } catch (err) {
+    toast('Send failed: ' + err.message, true);
+  }
+}
+
+$('send').onclick = sendNote;
+$('composer').addEventListener('input', () => {
+  $('send').disabled = !$('composer').value.trim();
+});
+// Pause the moment you start writing — you're describing THIS frame.
+$('composer').addEventListener('focus', () => v.pause());
+
+// ------------------------------------------------------------- notes list
+async function loadNotes() {
+  const { notes } = await (await fetch('/api/notes')).json();
+  const list = $('notes');
+  $('notesEmpty').style.display = notes.length ? 'none' : '';
+  list.innerHTML = '';
+  notes.slice().reverse().forEach((n) => {
+    const el = document.createElement('div');
+    el.className = 'note';
+    const img = n.frameImage
+      ? `<img src="/frame?p=${encodeURIComponent(n.frameImage)}" alt="" onerror="this.remove()" />`
+      : '';
+    el.innerHTML = `
+      ${img}
+      <div class="body">
+        <div class="tc mono">f${n.frame} · ${n.timecode}</div>
+        ${n.scene ? `<div class="sc">${n.scene.name} · +${n.scene.frameInScene}f</div>` : ''}
+        <div class="tx">${n.note.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</div>
+      </div>
+      <button class="copyBtn" title="Copy this note for Claude">⧉</button>`;
+    const thumbEl = el.querySelector('img');
+    if (thumbEl) {
+      thumbEl.onclick = () => {
+        $('boxImg').src = thumbEl.src;
+        $('box').classList.add('on');
+      };
+    }
+    // Click the timecode to jump back to its frame.
+    const tc = el.querySelector('.tc');
+    tc.style.cursor = 'pointer';
+    tc.onclick = () => { v.currentTime = n.time; };
+    el.querySelector('.copyBtn').onclick = async (ev) => {
+      ev.stopPropagation(); // don't also seek
+      toast(await copyText(noteBlock(n)) ? 'Copied for Claude' : 'Copy failed', false);
+    };
+    list.appendChild(el);
+  });
+}
+
+$('box').onclick = () => $('box').classList.remove('on');
+
+// ------------------------------------------------------------- keyboard
+document.addEventListener('keydown', (e) => {
+  const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+
+  if (typing) {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendNote(); }
+    if (e.key === 'Escape') document.activeElement.blur();
+    return;
+  }
+
+  const mult = e.shiftKey ? 10 : 1;
+  if (e.key === ' ') { e.preventDefault(); v.paused ? v.play() : v.pause(); }
+  else if (e.key === 'ArrowRight' || e.key === '.') { e.preventDefault(); step(mult); }
+  else if (e.key === 'ArrowLeft' || e.key === ',') { e.preventDefault(); step(-mult); }
+  else if (e.key === 'f') { e.preventDefault(); v.pause(); $('composer').focus(); }
+  else if (e.key === 'j') { v.playbackRate = 1; step(-5); }
+  else if (e.key === 'k') { v.pause(); }
+  else if (e.key === 'l') { v.play(); }
+  else if (e.key === 'Home') { v.currentTime = 0; }
+});
+
+loadSession();
+</script>
+</body>
+</html>

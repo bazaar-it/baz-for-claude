@@ -125,10 +125,12 @@ baz export start --wait --json --project-id <id>    # get outputUrl
 npx baz-for-claude --project <id> --url "<outputUrl>"
 ```
 
-Given `--project` and no `--url`, it pulls the newest completed export on
-startup by itself. When your agent re-exports it calls `POST /api/refresh` and
-the open page swaps the video within ~5s — no button, no reload. It only ever
-*pulls*; it never renders, so it never spends balance.
+Given `--project`, it keeps itself current: newest completed export pulled at
+startup, then re-checked every 30s in the background (`--sync-interval` to
+tune, `0` to disable). When the URL changes, the open page swaps the video
+within ~5s — no button, no reload. Agents can `POST /api/refresh` for an
+immediate swap after re-exporting. It only ever *pulls*; it never renders, so
+it never spends balance.
 
 Without `--project`, everything else works; notes just carry frame and timecode
 instead of scene names.

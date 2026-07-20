@@ -44,6 +44,7 @@ function parseArgs(argv) {
     else if (a === '--no-thumbs') out.thumbs = false;
     else if (a === '--no-open') out.noOpen = true;
     else if (a === '--replay') out.replay = true;
+    else if (a === '--sync-interval') out.syncInterval = parseInt(argv[++i], 10);
     else if (a === '--help' || a === '-h') out.help = true;
   }
   return out;
@@ -63,6 +64,7 @@ baz-for-claude — frame-accurate video feedback for AI coding agents
   --no-thumbs        Skip frame capture (notes carry timecode only)
   --no-open          Don't auto-open the browser
   --replay           Print every past note for this port, then exit
+  --sync-interval <s>  How often to check for a newer export (default 30, 0 = off)
 
 State lives in <tmp>/baz-for-claude/<port>/ — isolated per port so parallel
 sessions never cross-post. Point your agent at the tail command printed
@@ -177,6 +179,38 @@ async function latestExport(projectId) {
     }
   }
   return null;
+}
+
+/**
+ * Sync to the newest completed export (and optionally the scene map). Used by
+ * POST /api/refresh AND a background interval — an agent that re-exports and
+ * forgets to ping us shouldn't leave the reviewer staring at the old render.
+ */
+let syncInFlight = false;
+async function syncLatest({ alsoScenes = false } = {}) {
+  if (!session.project || syncInFlight) return { changed: false, latest: null };
+  syncInFlight = true;
+  try {
+    const [scenes, latest] = await Promise.all([
+      alsoScenes ? loadScenes(session.project) : Promise.resolve(null),
+      latestExport(session.project),
+    ]);
+    if (scenes) session.scenes = scenes;
+    const changed = !!latest && latest.url !== session.url;
+    if (changed) {
+      session.url = latest.url;
+      // The scene map likely changed with the render that produced this URL.
+      if (!scenes) session.scenes = await loadScenes(session.project);
+      console.log(`  synced     newer export ${latest.id} (${latest.createdAt})`);
+    }
+    await saveSession();
+    return { changed, latest };
+  } catch (err) {
+    console.error(`  ! sync failed: ${err.message.split('\n')[0]}`);
+    return { changed: false, latest: null };
+  } finally {
+    syncInFlight = false;
+  }
 }
 
 /**
@@ -469,20 +503,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/api/refresh' && req.method === 'POST') {
       if (!session.project) return send(res, 400, { error: 'no project id set' });
-      // Independent baz CLI calls — running them serially doubled refresh time.
-      const [scenes, latest] = await Promise.all([
-        loadScenes(session.project),
-        latestExport(session.project),
-      ]);
-      session.scenes = scenes;
-      const changed = !!latest && latest.url !== session.url;
-      if (changed) session.url = latest.url;
-      await saveSession();
-      console.log(
-        changed
-          ? `  refreshed -> newer export ${latest.id} (${latest.createdAt})`
-          : `  refreshed -> already newest (${session.scenes.length} scenes)`
-      );
+      const { changed, latest } = await syncLatest({ alsoScenes: true });
       return send(res, 200, { ...session, changed, latest });
     }
 
@@ -526,25 +547,29 @@ server.once('error', (err) => {
 server.listen(PORT, '127.0.0.1', async () => {
   const addr = `http://localhost:${PORT}`;
   if (session.project) {
-    // Auto-sync on boot: pull the scene map AND the newest completed export, so
-    // you're never reviewing a stale render without having asked. An explicit
-    // --url wins — that's a deliberate "review THIS file" instruction.
-    const [scenes, latest] = await Promise.all([
-      loadScenes(session.project),
-      args.url ? Promise.resolve(null) : latestExport(session.project),
-    ]);
-    session.scenes = scenes;
-    if (latest && latest.url !== session.url) {
-      session.url = latest.url;
-      console.log(`  synced     latest export ${latest.id} (${latest.createdAt})`);
-    }
+    // Boot sync: scene map + newest completed export. An explicit --url still
+    // seeds the starting video, but auto-sync takes over from there.
+    session.scenes = await loadScenes(session.project);
+    if (!args.url) await syncLatest();
+    await saveSession();
+  } else {
+    await saveSession();
   }
-  await saveSession();
+
+  // Background auto-sync: a re-export changes the URL server-side and the open
+  // page swaps within ~5s — nobody has to remember to press or POST anything.
+  // POST /api/refresh remains for an immediate swap.
+  const syncEvery = (args.syncInterval ?? 30) * 1000;
+  if (session.project && syncEvery > 0) {
+    setInterval(() => syncLatest(), syncEvery).unref();
+  }
+
   console.log(`\n  baz-for-claude   ${addr}`);
   console.log(`  state      ${OUT_DIR}`);
   console.log(`  watch      tail -n 0 -F ${LOG_FILE}`);
   if (session.url) console.log(`  video      ${session.url.slice(0, 78)}`);
   if (session.scenes.length) console.log(`  scenes     ${session.scenes.length} loaded`);
+  if (session.project && syncEvery > 0) console.log(`  auto-sync  every ${syncEvery / 1000}s (newest completed export)`);
   console.log('');
   if (!args.noOpen) {
     execFile('open', [addr], () => {});

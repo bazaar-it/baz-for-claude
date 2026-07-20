@@ -55,18 +55,28 @@ Do NOT poll on a timer — the tail costs ~1MB and pushes events to you.
 - `under:` — other layers at that frame, in case the note is about one of them
 - `shot` — **Read this PNG.** It's exactly what the user is looking at.
 
-## Keeping the video current — your job, not theirs
+## The work loop — batch, fix, refresh, re-check
 
-There is no refresh button in the UI. When you re-export, tell the server and
-the user's page swaps itself within ~5s:
+The user reviews faster than you edit. Notes WILL arrive while you're
+mid-fix — they queue in `notes.log` and surface as background notifications.
+Handling one note per export wastes renders and leaves the user waiting, and
+finishing a fix without checking the queue means ignoring feedback they
+already sent. The loop is:
 
-```bash
-curl -sX POST http://localhost:<port>/api/refresh
-```
+1. **Drain the queue first.** Before starting work, read every pending note:
+   `tail -20 <tmp>/baz-for-claude/<port>/notes.log` (or `--replay` for all).
+   New notifications that arrive mid-turn are part of the same batch.
+2. **Fix the whole batch**, then export ONCE (`baz export start --wait --json`).
+3. **Refresh the review page:** `curl -sX POST http://localhost:<port>/api/refresh`
+   — the open page swaps to the new render within ~5s. The server also
+   auto-checks every 30s, so even a forgotten refresh self-heals — but POST
+   anyway; the user shouldn't wait half a minute.
+4. **Re-check the queue before reporting done.** If notes arrived while you
+   were exporting, go to 2. Only tell the user you're finished when the queue
+   is empty.
 
-The page polls for URL changes (cheap, local) and reloads the video
-automatically — but never while the user is mid-note, so their subject doesn't
-vanish as they're describing it.
+The page never swaps the video while the user is mid-note, so refreshing is
+always safe.
 
 ## STALE EXPORT
 
@@ -96,4 +106,5 @@ npx baz-for-claude --port 7790 --replay
 1. `Read` the `shot` PNG — see the actual problem.
 2. Use the scene id to fetch code (`baz scenes code <id> --output f.tsx`).
 3. Convert `+Nf` to the scene's local frame when editing timings.
-4. Fix, re-export, `POST /api/refresh` — don't make them reload anything.
+4. Fix the batch, export once, `POST /api/refresh`, re-check the queue —
+   don't make the user reload anything or repeat themselves.

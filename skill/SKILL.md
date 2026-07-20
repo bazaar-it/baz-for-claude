@@ -66,14 +66,33 @@ already sent. The loop is:
 1. **Drain the queue first.** Before starting work, read every pending note:
    `tail -20 <tmp>/baz-for-claude/<port>/notes.log` (or `--replay` for all).
    New notifications that arrive mid-turn are part of the same batch.
-2. **Fix the whole batch**, then export ONCE (`baz export start --wait --json`).
-3. **Refresh the review page:** `curl -sX POST http://localhost:<port>/api/refresh`
-   — the open page swaps to the new render within ~5s. The server also
-   auto-checks every 30s, so even a forgotten refresh self-heals — but POST
-   anyway; the user shouldn't wait half a minute.
+2. **Fix the whole batch — in parallel when the notes touch different scenes.**
+   Group the notes by scene id. If your agent can spawn subagents (Claude Code:
+   the Task/Agent tool), fan out **one subagent per scene** and let them edit
+   concurrently — a 6-note batch across 6 scenes finishes in roughly the time
+   of one. Rules that keep parallel edits safe:
+   - **One subagent per scene, never per note.** Two notes on the same scene go
+     to the *same* subagent — two agents editing one scene's code clobber each
+     other.
+   - **Every baz command pins `--project-id <id>`.** Concurrent sessions flip
+     the active-project pointer, so an unpinned command can edit the wrong
+     project. Each subagent uses `baz scenes code <scene-id> --project-id <id>`
+     to read and `baz scenes set-code <scene-id> --file f.tsx --project-id <id>`
+     to write (scene id is positional), always pinned.
+   - **Keep structural changes serial and in the main agent** — reordering,
+     retiming that shifts neighbors, or add/delete that renumbers scenes touches
+     shared project state and must not run alongside per-scene edits. Do the
+     parallel per-scene code edits first, then any structural pass, then export.
+   - **Do NOT export inside a subagent.** Export is the join point (step 3):
+     one export after every subagent has returned.
+3. **Export ONCE** after all edits land (`baz export start --wait --json --project-id <id>`),
+   then **refresh:** `curl -sX POST http://localhost:<port>/api/refresh` — the
+   open page swaps to the new render within ~5s. The server also auto-checks
+   every 30s, so a forgotten refresh self-heals — but POST anyway; the user
+   shouldn't wait half a minute.
 4. **Re-check the queue before reporting done.** If notes arrived while you
-   were exporting, go to 2. Only tell the user you're finished when the queue
-   is empty.
+   were editing or exporting, go to 2. Only tell the user you're finished when
+   the queue is empty.
 
 The page never swaps the video while the user is mid-note, so refreshing is
 always safe.
@@ -104,7 +123,7 @@ npx baz-for-claude --port 7790 --replay
 ## Acting on a note
 
 1. `Read` the `shot` PNG — see the actual problem.
-2. Use the scene id to fetch code (`baz scenes code <id> --output f.tsx`).
+2. Use the scene id to fetch code (`baz scenes code <id> --output f.tsx --project-id <id>`).
 3. Convert `+Nf` to the scene's local frame when editing timings.
 4. Fix the batch, export once, `POST /api/refresh`, re-check the queue —
    don't make the user reload anything or repeat themselves.

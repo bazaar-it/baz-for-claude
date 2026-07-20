@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>bazframe</title>
+<title>baz-for-claude</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif:ital@1&display=swap');
 
@@ -65,23 +65,14 @@
     font-size: 14px;
     line-height: 2;
   }
-  #empty kbd { font-size: 12px; }
-
-  /* Stale-export warning, shrunk to a chip so it costs no vertical space.
-     Full detail lives in the tooltip. */
-  #staleChip {
-    display: none;
-    background: rgba(212,98,58,.18);
-    border: 1px solid rgba(212,98,58,.5);
-    color: #f0a488;
-    padding: 3px 10px;
-    border-radius: 999px;
-    font-size: 10.5px;
-    white-space: nowrap;
-    cursor: pointer;
+  /* Fallback entry when launched without --url. */
+  #emptyForm {
+    display: flex; gap: 7px; justify-content: center;
+    margin-top: 14px; width: 420px; max-width: 70vw;
   }
-  #staleChip:hover { background: rgba(212,98,58,.3); border-color: rgba(212,98,58,.8); }
-  #staleChip:disabled { opacity: .6; cursor: default; }
+  #emptyForm input { margin: 0; background: rgba(255,255,255,.06); color: #ddd; border-color: rgba(255,255,255,.16); }
+  #emptyForm button { background: rgba(255,255,255,.1); color: #ddd; border-color: rgba(255,255,255,.16); flex-shrink: 0; }
+  #emptyForm button:hover { background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.3); }
 
   /* frame flash on capture */
   #flash {
@@ -99,46 +90,23 @@
     border-top: 1px solid var(--line);
     background: var(--panel);
     flex-shrink: 0;
-    position: relative; /* anchor for the settings popover */
   }
 
-  /* Wordmark, kept quiet — present but never competing with the readout. */
+  /* Wordmark pinned to the corner — costs no layout, never competes with the
+     timecode. Fixed because body is a flex row; it must not become an item. */
   #wordmark {
+    position: fixed;
+    right: 14px;
+    bottom: 9px;
     font-family: 'Instrument Serif', Georgia, serif;
     font-style: italic;
-    font-weight: 400;
-    font-size: 16px;
+    font-size: 15px;
     color: var(--text);
-    opacity: .42;
-    letter-spacing: .01em;
+    opacity: .3;
     user-select: none;
+    pointer-events: none;
     white-space: nowrap;
-  }
-  #gear {
-    padding: 4px 9px;
-    font-size: 13px;
-    line-height: 1;
-    color: var(--dim);
-  }
-  #settings {
-    display: none;
-    position: absolute;
-    right: 20px;
-    top: calc(100% - 6px);
-    width: 340px;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 13px 14px 14px;
-    box-shadow: 0 14px 40px rgba(10,10,10,.18);
-    z-index: 40;
-  }
-  #settings.open { display: block; }
-  #settings h2 {
-    margin: 0 0 9px;
-    font-size: 10px; font-weight: 600;
-    letter-spacing: .1em; text-transform: uppercase;
-    color: var(--dimmer);
+    z-index: 5;
   }
   #scrub {
     position: relative;
@@ -191,13 +159,6 @@
   }
   #transportRow #scrub { flex: 1; min-width: 0; }
 
-  #metaRow {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    margin-top: 9px;
-    min-height: 22px;
-  }
   button {
     background: var(--panel-2);
     color: var(--text);
@@ -219,32 +180,10 @@
     letter-spacing: -.025em;
     color: var(--text);
     flex-shrink: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 9px;
-  }
-  .readout .sub {
-    color: var(--dimmer);
-    font-size: 12px;
-    font-weight: 400;
-    letter-spacing: 0;
   }
   .spacer { flex: 1; }
-  .hint { color: var(--dimmer); font-size: 11px; }
-  .hint kbd {
-    background: var(--panel-2); border: 1px solid var(--line);
-    border-radius: 4px; padding: 1px 5px; font-size: 10px;
-    font-family: ui-monospace, monospace;
-  }
-  #sceneNow {
-    color: var(--accent-ink); font-size: 12px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    min-width: 0; max-width: 320px;
-  }
-  #sceneNow .id { color: var(--dimmer); }
   @media (max-width: 1200px) {
     #side { width: 320px; }
-    .hint { display: none; }
   }
 
   /* ---------- sidebar ---------- */
@@ -303,11 +242,6 @@
     display: flex; align-items: center; gap: 7px;
     margin-top: 7px;
   }
-  #metaText {
-    font-size: 11px; color: var(--dim);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    min-width: 0;
-  }
   #inputBar .spacer { flex: 1; }
 
   .iconBtn {
@@ -329,7 +263,6 @@
     background: linear-gradient(135deg, #8CEDB1 0%, #6ADDA0 100%);
     border-color: transparent;
   }
-  .iconBtn.primary:disabled { opacity: .4; cursor: default; }
   #notesPane { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
   #notes { flex: 1; overflow-y: auto; padding: 6px 0 20px; min-height: 0; }
 
@@ -354,16 +287,25 @@
   body.wide .sec { border-bottom: 1px solid var(--line); flex-shrink: 0; }
   body.wide #notesPane { flex: 1 1 auto; min-height: 0; }
   body.wide #notes { padding-top: 6px; }
-  body.wide #sceneNow { max-width: 420px; flex-basis: auto; }
   .note {
     padding: 10px 16px;
     border-bottom: 1px solid rgba(10,10,10,.09);
     display: flex; gap: 10px;
   }
   .note img {
-    width: 46px; border-radius: 4px; flex-shrink: 0;
-    background: #000; cursor: pointer; border: 1px solid var(--line);
+    /* align-self stops the flex row stretching it — that was distorting the
+       aspect ratio. height:auto keeps whatever the video actually is. */
+    align-self: flex-start;
+    width: 84px;
+    height: auto;
+    border-radius: 5px;
+    flex-shrink: 0;
+    background: #000;
+    cursor: zoom-in;
+    border: 1px solid var(--line);
+    display: block;
   }
+  .note img:hover { border-color: var(--accent-ink); }
   .note .body { min-width: 0; flex: 1; }
   .note .tc { color: var(--accent-ink); font-size: 11px; }
   .note .sc { color: var(--dimmer); font-size: 10px; }
@@ -404,9 +346,16 @@
 
 <div id="stage">
   <div id="videoWrap">
+    <!-- Fallback only. Claude normally passes --url / --project at launch. -->
     <div id="empty">
-      Paste a hosted video URL in the panel →<br />
-      <span style="font-size:12px">then <kbd>space</kbd> to play, <kbd>←</kbd> <kbd>→</kbd> to step frames</span>
+      No video loaded
+      <div style="font-size:12px; margin-top:6px">
+        Start with <span class="mono">npx baz-for-claude --url &lt;video-url&gt;</span>
+      </div>
+      <div id="emptyForm">
+        <input id="url" placeholder="…or paste a hosted video URL" spellcheck="false" />
+        <button id="load">Load</button>
+      </div>
     </div>
     <video id="v" playsinline preload="auto" style="display:none"></video>
     <div id="flash"></div>
@@ -419,42 +368,20 @@
         <div id="played"></div>
         <div id="head" style="left:0"></div>
       </div>
-      <div class="readout">
-        <span id="tc">00:00.00</span>
-        <span class="sub">f<span id="fr">0</span></span>
-      </div>
-    </div>
-
-    <div id="metaRow">
-      <div id="sceneNow"></div>
-      <button id="staleChip" title="">⚠ stale — pull latest</button>
-      <div class="spacer"></div>
-      <div class="hint">
-        <kbd>space</kbd> play &nbsp; <kbd>←</kbd><kbd>→</kbd> frame &nbsp;
-        <kbd>⇧</kbd> ×10 &nbsp; <kbd>f</kbd> note &nbsp; <kbd>⌘↵</kbd> send
-      </div>
-      <span id="wordmark">baz.studio</span>
-      <button id="gear" title="Source settings">⚙</button>
-    </div>
-
-    <div id="settings">
-      <h2>Source</h2>
-      <input id="url" placeholder="https://… hosted export URL" spellcheck="false" />
-      <input id="project" placeholder="baz project id (optional — adds scene names)" spellcheck="false" />
-      <button id="load" style="width:100%">Load</button>
-      <button id="pullLatest" style="width:100%; margin-top:7px">↻ Pull latest export</button>
+      <!-- Timecode only. Frame/scene/project ids ride in the note, not the UI. -->
+      <div class="readout"><span id="tc">00:00.00</span></div>
     </div>
   </div>
 </div>
+
+<span id="wordmark">baz.studio</span>
 
 <div id="side">
   <div class="sec" id="composerSec">
     <div id="inputBox">
       <textarea id="composer" placeholder="What's wrong at this frame?"></textarea>
       <div id="inputBar">
-        <span id="metaText" class="mono">—</span>
         <span class="spacer"></span>
-        <button id="copyFrame" class="iconBtn" title="Copy this frame as an image">⧉</button>
         <button id="send" class="iconBtn primary" disabled title="Send  (⌘↵)">↑</button>
       </div>
     </div>
@@ -507,7 +434,6 @@ async function loadSession() {
   S = await (await fetch('/api/session')).json();
   prepScenes();
   $('url').value = S.url || '';
-  $('project').value = S.project || '';
   if (S.url) attach(S.url);
   drawScenes();
   loadNotes();
@@ -524,6 +450,30 @@ async function saveSession(url, project) {
   drawScenes();
 }
 
+/**
+ * Auto-update: Claude re-exports and calls /api/refresh, so the video URL
+ * changes server-side. Poll for that (cheap — local JSON, no CLI calls) and
+ * swap the video in without anyone pressing a button.
+ *
+ * Visible tabs only, and never mid-note: swapping the video while you're
+ * describing a frame would pull the subject out from under you.
+ */
+setInterval(async () => {
+  if (document.visibilityState !== 'visible') return;
+  if ($('composer').value.trim()) return;
+  try {
+    const next = await (await fetch('/api/session')).json();
+    if (next.url && next.url !== S.url) {
+      S = { ...S, ...next };
+      prepScenes();
+      attach(S.url);
+      toast('Updated to the latest export');
+    }
+  } catch {
+    /* server restarting — try again next tick */
+  }
+}, 5000);
+
 function attach(url) {
   // Proxied so the <video> is same-origin — that's what makes canvas frame
   // capture possible. Bytes stream through; nothing is stored.
@@ -533,61 +483,12 @@ function attach(url) {
   v.load();
 }
 
-// ------------------------------------------------------------- settings menu
-$('gear').onclick = (e) => {
-  e.stopPropagation();
-  $('settings').classList.toggle('open');
-};
-document.addEventListener('click', (e) => {
-  if (!$('settings').contains(e.target) && e.target !== $('gear')) {
-    $('settings').classList.remove('open');
-  }
-});
-
-/**
- * Pull the newest completed export for this project and reload.
- * Does NOT render anything — if the newest export is still older than the last
- * scene edit, it says so and leaves re-rendering to you.
- */
-async function pullLatest(btn) {
-  if (!S.project) return toast('Set a project id first', true);
-  const label = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '⟳ checking…';
-  try {
-    const r = await fetch('/api/refresh', { method: 'POST' });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || 'refresh failed');
-    S = { ...S, ...d };
-    prepScenes();
-    $('url').value = S.url || '';
-    if (d.changed) {
-      attach(S.url); // loadedmetadata re-runs drawScenes + checkDrift
-      toast('Pulled a newer export');
-    } else {
-      drawScenes();
-      checkDrift();
-      toast(d.latest ? 'Already the newest export — re-render to realign' : 'No completed export found', true);
-    }
-  } catch (err) {
-    toast('Refresh failed: ' + err.message, true);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = label;
-  }
-}
-
-$('staleChip').onclick = () => pullLatest($('staleChip'));
-$('pullLatest').onclick = () => pullLatest($('pullLatest'));
-
 $('load').onclick = async () => {
   const url = $('url').value.trim();
-  const project = $('project').value.trim();
   if (!url) return toast('Need a URL', true);
-  await saveSession(url, project);
+  await saveSession(url, S.project || '');
   attach(url);
-  $('settings').classList.remove('open');
-  toast(S.scenes.length ? `Loaded — ${S.scenes.length} scenes` : 'Loaded');
+  toast('Loaded');
 };
 
 // ------------------------------------------------------------- scene rail
@@ -630,20 +531,12 @@ function paint(mediaTime) {
   if (f === lastPaintedFrame) return;
   lastPaintedFrame = f;
   window.__paints = (window.__paints || 0) + 1; // perf counter, visible in devtools
+  // Timecode is all a human needs on screen. Frame number, scene id and layer
+  // stack are resolved server-side and travel with the note.
   $('tc').textContent = tcOf(t);
-  $('fr').textContent = frameOf(t);
   const pct = duration ? (t / duration) * 100 : 0;
   $('head').style.left = pct + '%';
   $('played').style.width = pct + '%';
-
-  const act = activeScenes(t);
-  const sc = act[0] || null;
-  const extra = act.length - 1;
-  $('sceneNow').innerHTML = sc
-    ? `${sc.name} <span class="id">· ${sc.id.slice(0, 8)} · +${Math.round((t - sc.start) * S.fps)}f` +
-      (extra > 0 ? ` · +${extra} layer${extra > 1 ? 's' : ''}` : '') + `</span>`
-    : '';
-  $('metaText').textContent = `f${frameOf(t)} · ${tcOf(t)}` + (sc ? ` · ${sc.name}` : '');
 }
 
 // Event-driven painting — NO permanent interval. rVFC fires only when a video
@@ -668,26 +561,11 @@ v.addEventListener('loadedmetadata', () => {
   lastPaintedFrame = -1; // same frame number, possibly a different video now
   drawScenes();
   paint();
-  checkDrift();
 });
 
-// If the export predates the latest scene edits, every marker is off. Warn
-// rather than let feedback get pinned to the wrong scene.
-function checkDrift() {
-  const chip = $('staleChip');
-  const timeline = S.scenes.reduce((m, s) => Math.max(m, s.start + s.duration), 0);
-  if (!timeline || !duration || Math.abs(timeline - duration) <= 0.2) {
-    chip.style.display = 'none';
-    return;
-  }
-  // Explicit value — '' would fall back to the stylesheet's display:none.
-  chip.style.display = 'inline-block';
-  chip.title =
-    `Scene map is ${(timeline - duration).toFixed(2)}s off this video ` +
-    `(timeline ${timeline.toFixed(2)}s vs video ${duration.toFixed(2)}s). ` +
-    `The export predates the latest scene edits, so scene names may be wrong — ` +
-    `frame numbers and timecodes are still exact. Re-export to realign.`;
-}
+// Staleness isn't shown to you — the note carries `videoDuration`, the server
+// compares it to the project timeline, and any mismatch is flagged to Claude in
+// the note itself. Claude decides whether a re-export is warranted.
 v.addEventListener('play', () => ($('play').textContent = '❚❚'));
 v.addEventListener('pause', () => ($('play').textContent = '▶'));
 v.addEventListener('error', () => toast('Could not load video', true));
@@ -702,11 +580,28 @@ v.style.cursor = 'pointer';
 let scrubbing = false;
 let resumeAfterScrub = false;
 
+let pendingSeek = null;
+let seekRaf = 0;
+
+/**
+ * Live scrubbing. pointermove fires far faster than the decoder can seek, so
+ * setting currentTime on every event queues seeks the browser then has to work
+ * through — which is why the preview used to lag until you let go. Instead,
+ * keep only the LATEST position and apply it once per animation frame.
+ */
 function seekFromPointer(e) {
   const r = $('scrub').getBoundingClientRect();
-  const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
-  v.currentTime = pct * duration;
-  paint(); // head tracks the pointer immediately, not on the next decoded frame
+  pendingSeek = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * duration;
+  paint(pendingSeek); // playhead + timecode track the pointer with zero delay
+  if (seekRaf) return;
+  seekRaf = requestAnimationFrame(() => {
+    seekRaf = 0;
+    if (pendingSeek === null) return;
+    // fastSeek jumps to the nearest keyframe without a full decode where it
+    // exists (Firefox/Safari); Chrome falls back to a plain assignment.
+    if (scrubbing && typeof v.fastSeek === 'function') v.fastSeek(pendingSeek);
+    else v.currentTime = pendingSeek;
+  });
 }
 
 $('scrub').addEventListener('pointerdown', (e) => {
@@ -728,6 +623,11 @@ function endScrub(e) {
   scrubbing = false;
   $('scrub').classList.remove('dragging');
   try { $('scrub').releasePointerCapture(e.pointerId); } catch { /* already released */ }
+  // Land on the exact frame — fastSeek during the drag was keyframe-approximate.
+  if (pendingSeek !== null) {
+    v.currentTime = pendingSeek;
+    pendingSeek = null;
+  }
   if (resumeAfterScrub) v.play();
 }
 $('scrub').addEventListener('pointerup', endScrub);
@@ -798,24 +698,6 @@ async function copyText(text) {
   }
 }
 
-async function copyFrameImage() {
-  if (!v.videoWidth) return toast('No frame loaded', true);
-  v.pause();
-  const c = document.createElement('canvas');
-  c.width = v.videoWidth;
-  c.height = v.videoHeight;
-  c.getContext('2d').drawImage(v, 0, 0);
-  try {
-    const blob = await new Promise((r) => c.toBlob(r, 'image/png'));
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-    toast(`Frame ${frameOf(v.currentTime)} copied — paste it anywhere`);
-  } catch (err) {
-    toast('Image copy failed: ' + err.message, true);
-  }
-}
-
-$('copyFrame').onclick = copyFrameImage;
-
 async function sendNote() {
   const text = $('composer').value.trim();
   if (!text) return;
@@ -867,11 +749,11 @@ async function loadNotes() {
     const img = n.frameImage
       ? `<img src="/frame?p=${encodeURIComponent(n.frameImage)}" alt="" onerror="this.remove()" />`
       : '';
+    // Timecode only — the scene/frame/project ids live in the copied note.
     el.innerHTML = `
       ${img}
       <div class="body">
-        <div class="tc mono">f${n.frame} · ${n.timecode}</div>
-        ${n.scene ? `<div class="sc">${n.scene.name} · +${n.scene.frameInScene}f</div>` : ''}
+        <div class="tc mono">${n.timecode}</div>
         <div class="tx">${n.note.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</div>
       </div>
       <button class="copyBtn" title="Copy this note for Claude">⧉</button>`;

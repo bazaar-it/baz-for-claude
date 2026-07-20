@@ -1,10 +1,10 @@
 {
-  "name": "bazframe",
+  "name": "baz-for-claude",
   "version": "0.1.0",
   "description": "Frame-accurate video feedback for AI coding agents. Pause a hosted video, type a note, and it lands in your agent's context with the exact frame number and a still of that frame.",
   "type": "module",
   "bin": {
-    "bazframe": "./server.mjs"
+    "baz-for-claude": "./server.mjs"
   },
   "files": [
     "server.mjs",
@@ -31,10 +31,10 @@
   "author": "Jack O'Sullivan (https://baz.studio)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bazaar-it/bazframe.git"
+    "url": "git+https://github.com/bazaar-it/baz-for-claude.git"
   },
-  "homepage": "https://github.com/bazaar-it/bazframe#readme",
+  "homepage": "https://github.com/bazaar-it/baz-for-claude#readme",
   "bugs": {
-    "url": "https://github.com/bazaar-it/bazframe/issues"
+    "url": "https://github.com/bazaar-it/baz-for-claude/issues"
   }
 }

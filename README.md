@@ -1,15 +1,15 @@
-# bazframe
+# baz-for-claude
 
 **Frame-accurate video feedback for AI coding agents.**
 
 Reviewing generated video with an AI agent is lossy. You say *"the thing around
-12 seconds feels late"*; the agent guesses. bazframe replaces the guess with
+12 seconds feels late"*; the agent guesses. baz-for-claude replaces the guess with
 coordinates: pause on a frame, type a note, and it arrives in your agent's
 context as
 
 ```
 [NOTE] f510 | 00:17.00 | scene "sc04c-card" 3f8b4993 +103f
-       | shot /tmp/bazframe/7790/frames/f00510-abc.png
+       | shot /tmp/baz-for-claude/7790/frames/f00510-abc.png
        :: the glass card lands before the cursor click, pull it 6 frames later
 ```
 
@@ -19,7 +19,7 @@ a **PNG of the frame** the agent can actually open and look at.
 Zero dependencies. Nothing to install.
 
 ```bash
-npx bazframe --url "https://your-cdn.example/render.mp4"
+npx baz-for-claude --url "https://your-cdn.example/render.mp4"
 ```
 
 ---
@@ -49,6 +49,10 @@ works for any agent that can watch a file, or you can just read it yourself.
 Every note is also copied to your clipboard when you send it, so you can paste
 it manually if nothing is listening.
 
+The UI itself stays deliberately bare — you see a timecode, nothing else. Frame
+numbers, scene ids and layer stacks are resolved server-side and ride in the
+note, because that's who needs them.
+
 ## Install the skill (Claude Code)
 
 The package ships a skill that teaches Claude the whole workflow — port
@@ -56,9 +60,9 @@ selection, arming the watcher, reading the note format, and the stale-export
 trap:
 
 ```bash
-mkdir -p ~/.claude/skills/bazframe
-curl -o ~/.claude/skills/bazframe/SKILL.md \
-  https://raw.githubusercontent.com/bazaar-it/bazframe/main/skill/SKILL.md
+mkdir -p ~/.claude/skills/baz-for-claude
+curl -o ~/.claude/skills/baz-for-claude/SKILL.md \
+  https://raw.githubusercontent.com/bazaar-it/baz-for-claude/main/skill/SKILL.md
 ```
 
 Now any Claude session in any repo knows how to run a review.
@@ -66,7 +70,7 @@ Now any Claude session in any repo knows how to run a review.
 ## Usage
 
 ```
-npx bazframe [options]
+npx baz-for-claude [options]
 
   --url <url>        Hosted video URL to load on start
   --project <id>     baz project id — adds scene names
@@ -96,12 +100,12 @@ Drag the playhead to scrub; click a note's timecode to jump back to that frame.
 
 ## Running several reviews at once
 
-State is isolated **per port** (`<tmp>/bazframe/<port>/`), so parallel agent
+State is isolated **per port** (`<tmp>/baz-for-claude/<port>/`), so parallel agent
 sessions can each review a different video with no cross-talk:
 
 ```bash
-npx bazframe --port 7788 --url "…/render-a.mp4"   # session A
-npx bazframe --port 7790 --url "…/render-b.mp4"   # session B
+npx baz-for-claude --port 7788 --url "…/render-a.mp4"   # session A
+npx baz-for-claude --port 7790 --url "…/render-b.mp4"   # session B
 ```
 
 A port collision **fails loudly** (exit 2) rather than quietly binding the next
@@ -112,17 +116,19 @@ Per session: ~50MB server + ~1MB tail + a browser tab.
 
 ## baz integration (optional)
 
-Pass `--project <id>` and bazframe calls [`baz`](https://www.npmjs.com/package/bazaar.it)
+Pass `--project <id>` and baz-for-claude calls [`baz`](https://www.npmjs.com/package/bazaar.it)
 to pull the project's scene map, so notes name the scene they landed in and the
 timeline shows scene boundaries.
 
 ```bash
 baz export start --wait --json --project-id <id>    # get outputUrl
-npx bazframe --project <id> --url "<outputUrl>"
+npx baz-for-claude --project <id> --url "<outputUrl>"
 ```
 
-The **⚠ stale — pull latest** button fetches the newest completed export for the
-project. It only ever *pulls* — it never renders, so it never spends balance.
+Given `--project` and no `--url`, it pulls the newest completed export on
+startup by itself. When your agent re-exports it calls `POST /api/refresh` and
+the open page swaps the video within ~5s — no button, no reload. It only ever
+*pulls*; it never renders, so it never spends balance.
 
 Without `--project`, everything else works; notes just carry frame and timecode
 instead of scene names.
@@ -130,9 +136,9 @@ instead of scene names.
 ### The stale-export trap
 
 Scene names come from the project's *current* timeline. Edit scenes after
-exporting and every marker drifts. bazframe compares the video's real duration
-against the timeline total and flags a mismatch — the UI shows the warning and
-notes carry a `sceneMapStale` flag.
+exporting and every marker drifts. baz-for-claude compares the video's real duration
+against the timeline total and flags a mismatch. You don't see this — the flag
+rides in the note so your agent can decide whether a re-render is warranted.
 
 Frame numbers and timecodes are **always** exact. Only scene attribution drifts.
 
@@ -152,13 +158,13 @@ Two load-bearing details:
   are served `immutable` and your browser's own bounded cache holds them — a
   reload doesn't re-download 50MB.
 
-Video bytes are **never written to disk** by bazframe. Only the frame PNGs are
-saved (~40KB each), under `<tmp>/bazframe/<port>/frames/`. Use `--no-thumbs` to
+Video bytes are **never written to disk** by baz-for-claude. Only the frame PNGs are
+saved (~40KB each), under `<tmp>/baz-for-claude/<port>/frames/`. Use `--no-thumbs` to
 skip even those.
 
 ## State
 
-`<tmp>/bazframe/<port>/`
+`<tmp>/baz-for-claude/<port>/`
 
 | File | Role |
 |------|------|

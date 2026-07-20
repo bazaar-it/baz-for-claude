@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * bazframe — frame-accurate video feedback for AI coding agents.
+ * baz-for-claude — frame-accurate video feedback for AI coding agents.
  *
  * Plays a HOSTED video URL (nothing is downloaded to disk), lets you pause on a
  * frame, type feedback, and delivers that note — with exact frame number,
@@ -11,10 +11,10 @@
  * through, never persisted.
  *
  * Usage:
- *   npx bazframe
- *   npx bazframe --url <video-url> --project <baz-project-id>
- *   npx bazframe --port 7790 --no-thumbs
- *   npx bazframe --replay          # re-print past notes into a fresh session
+ *   npx baz-for-claude
+ *   npx baz-for-claude --url <video-url> --project <baz-project-id>
+ *   npx baz-for-claude --port 7790 --no-thumbs
+ *   npx baz-for-claude --replay          # re-print past notes into a fresh session
  */
 
 import http from 'node:http';
@@ -53,7 +53,7 @@ const args = parseArgs(process.argv.slice(2));
 
 if (args.help) {
   console.log(`
-bazframe — frame-accurate video feedback for AI coding agents
+baz-for-claude — frame-accurate video feedback for AI coding agents
 
   --url <url>        Hosted video URL to load on start
   --project <id>     baz project id — adds scene names via 'baz review --json'
@@ -64,7 +64,7 @@ bazframe — frame-accurate video feedback for AI coding agents
   --no-open          Don't auto-open the browser
   --replay           Print every past note for this port, then exit
 
-State lives in <tmp>/bazframe/<port>/ — isolated per port so parallel
+State lives in <tmp>/baz-for-claude/<port>/ — isolated per port so parallel
 sessions never cross-post. Point your agent at the tail command printed
 on startup.
 `);
@@ -79,7 +79,7 @@ const PORT = args.port || 7788;
  * file or clobber each other's session.json. One session = one port = one
  * state dir = one watcher. An explicit --out overrides everything.
  */
-const ROOT = path.join(os.tmpdir(), 'bazframe');
+const ROOT = path.join(os.tmpdir(), 'baz-for-claude');
 const OUT_DIR = args.out ? path.resolve(args.out) : path.join(ROOT, String(PORT));
 const NOTES_FILE = path.join(OUT_DIR, 'notes.jsonl');
 const LOG_FILE = path.join(OUT_DIR, 'notes.log');
@@ -514,9 +514,9 @@ const server = http.createServer(async (req, res) => {
  */
 server.once('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    console.error(`\n  port ${PORT} is already in use — probably another bazframe session.`);
+    console.error(`\n  port ${PORT} is already in use — probably another baz-for-claude session.`);
     console.error(`  each session needs its own port (state is isolated per port):\n`);
-    console.error(`    npx bazframe --port ${PORT + 2} --url <video-url>\n`);
+    console.error(`    npx baz-for-claude --port ${PORT + 2} --url <video-url>\n`);
     process.exit(2);
   }
   console.error(err.message);
@@ -525,11 +525,22 @@ server.once('error', (err) => {
 
 server.listen(PORT, '127.0.0.1', async () => {
   const addr = `http://localhost:${PORT}`;
-  if (session.project && !session.scenes.length) {
-    session.scenes = await loadScenes(session.project);
+  if (session.project) {
+    // Auto-sync on boot: pull the scene map AND the newest completed export, so
+    // you're never reviewing a stale render without having asked. An explicit
+    // --url wins — that's a deliberate "review THIS file" instruction.
+    const [scenes, latest] = await Promise.all([
+      loadScenes(session.project),
+      args.url ? Promise.resolve(null) : latestExport(session.project),
+    ]);
+    session.scenes = scenes;
+    if (latest && latest.url !== session.url) {
+      session.url = latest.url;
+      console.log(`  synced     latest export ${latest.id} (${latest.createdAt})`);
+    }
   }
   await saveSession();
-  console.log(`\n  bazframe   ${addr}`);
+  console.log(`\n  baz-for-claude   ${addr}`);
   console.log(`  state      ${OUT_DIR}`);
   console.log(`  watch      tail -n 0 -F ${LOG_FILE}`);
   if (session.url) console.log(`  video      ${session.url.slice(0, 78)}`);

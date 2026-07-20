@@ -363,7 +363,7 @@
 
   <div id="transport">
     <div id="transportRow">
-      <button id="play">▶</button>
+      <button id="play" type="button">▶</button>
       <div id="scrub">
         <div id="played"></div>
         <div id="head" style="left:0"></div>
@@ -570,7 +570,16 @@ v.addEventListener('play', () => ($('play').textContent = '❚❚'));
 v.addEventListener('pause', () => ($('play').textContent = '▶'));
 v.addEventListener('error', () => toast('Could not load video', true));
 
-const togglePlay = () => (v.paused ? v.play() : v.pause());
+function togglePlay() {
+  if (v.paused) {
+    // Surface a rejected play() (autoplay policy, interrupted load) instead of
+    // failing silently — otherwise "clicking play does nothing" is invisible.
+    const p = v.play();
+    if (p && p.catch) p.catch((err) => toast('Play failed: ' + err.message, true));
+  } else {
+    v.pause();
+  }
+}
 $('play').onclick = togglePlay;
 v.addEventListener('click', togglePlay);
 v.style.cursor = 'pointer';
@@ -604,13 +613,15 @@ function seekFromPointer(e) {
   });
 }
 
+let capturedPointer = null;
+
 $('scrub').addEventListener('pointerdown', (e) => {
   if (!duration) return;
   scrubbing = true;
   resumeAfterScrub = !v.paused;
   v.pause();
   $('scrub').classList.add('dragging');
-  $('scrub').setPointerCapture(e.pointerId);
+  try { $('scrub').setPointerCapture(e.pointerId); capturedPointer = e.pointerId; } catch { /* ok */ }
   seekFromPointer(e);
 });
 
@@ -618,11 +629,17 @@ $('scrub').addEventListener('pointermove', (e) => {
   if (scrubbing) seekFromPointer(e);
 });
 
-function endScrub(e) {
+function endScrub() {
   if (!scrubbing) return;
   scrubbing = false;
   $('scrub').classList.remove('dragging');
-  try { $('scrub').releasePointerCapture(e.pointerId); } catch { /* already released */ }
+  // Release WHATEVER pointer we captured, regardless of which event ended the
+  // drag. A leaked capture would silently swallow every later click — including
+  // the play button — so this must never be conditional on the event's id.
+  if (capturedPointer !== null) {
+    try { $('scrub').releasePointerCapture(capturedPointer); } catch { /* already gone */ }
+    capturedPointer = null;
+  }
   // Land on the exact frame — fastSeek during the drag was keyframe-approximate.
   if (pendingSeek !== null) {
     v.currentTime = pendingSeek;
@@ -632,6 +649,14 @@ function endScrub(e) {
 }
 $('scrub').addEventListener('pointerup', endScrub);
 $('scrub').addEventListener('pointercancel', endScrub);
+// lostpointercapture is the browser telling us the capture ended for ANY reason
+// (pointerup off-window, interruption). Without catching it, scrubbing could
+// stay true and capture could linger. This is the belt-and-braces recovery.
+$('scrub').addEventListener('lostpointercapture', endScrub);
+// Final safety net: any pointerup/cancel anywhere ends a stranded drag, so a
+// gesture that never delivered its pointerup can't permanently break clicking.
+window.addEventListener('pointerup', endScrub, true);
+window.addEventListener('pointercancel', endScrub, true);
 
 function step(frames) {
   if (!duration) return;

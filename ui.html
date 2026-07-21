@@ -226,11 +226,15 @@
     margin-top: 16px; padding-top: 13px;
     border-top: 1px solid rgba(255,255,255,.08);
   }
-  .obDots { display: flex; gap: 6px; }
+  .obDots { display: flex; }
   .obDots i {
     width: 6px; height: 6px; border-radius: 50%;
     background: rgba(255,255,255,.22);
     transition: background .15s, width .15s;
+    /* Padding enlarges the hit area; content-box clipping keeps the dot small. */
+    box-sizing: content-box;
+    padding: 8px 5px;
+    background-clip: content-box;
   }
   .obDots i.on { background: var(--accent); width: 16px; border-radius: 99px; }
   #obNext {
@@ -692,7 +696,6 @@
               <div class="a1frame"><i></i></div>
             </div>
             <b>Ask Claude to start a new baz project or open an existing one</b>
-            <span>“Open my baz project for the launch video in the baz-for-claude editor.”</span>
           </div>
 
           <!-- Step 2 — scrub to a frame, note appears carrying it. -->
@@ -828,20 +831,44 @@ function toast(msg, isErr) {
 })();
 
 // ------------------------------------------------------------- onboarding tour
-// One step at a time; Next wraps around so it can't dead-end.
+// Advances on its own so every step is seen even if a click never lands, and
+// hands control over the moment you interact. Clickable via Next, the dots, or
+// anywhere on the card — several targets rather than one small button.
 (() => {
+  const tour = $('obTour');
   const next = $('obNext');
-  if (!next) return;
-  const slides = [...document.querySelectorAll('.obSlide')];
-  const dots = [...document.querySelectorAll('.obDots i')];
+  if (!tour || !next) return;
+  const slides = [...tour.querySelectorAll('.obSlide')];
+  const dots = [...tour.querySelectorAll('.obDots i')];
   let i = 0;
-  next.onclick = () => {
-    i = (i + 1) % slides.length;
+  let auto = setInterval(() => go(i + 1), 6500);
+
+  function go(n) {
+    // Onboarding is gone once a video loads — stop ticking.
+    if (auto && !document.body.classList.contains('empty')) {
+      clearInterval(auto);
+      auto = null;
+      return;
+    }
+    i = ((n % slides.length) + slides.length) % slides.length;
     // Toggling .on restarts each scene's CSS animations from the top.
-    slides.forEach((s, n) => s.classList.toggle('on', n === i));
-    dots.forEach((d, n) => d.classList.toggle('on', n === i));
+    slides.forEach((s, k) => s.classList.toggle('on', k === i));
+    dots.forEach((d, k) => d.classList.toggle('on', k === i));
     next.textContent = i === slides.length - 1 ? 'Start over' : 'Next';
-  };
+  }
+  function manual(n) {
+    clearInterval(auto); // you're driving now
+    auto = null;
+    go(n);
+  }
+
+  next.addEventListener('click', (e) => { e.stopPropagation(); manual(i + 1); });
+  dots.forEach((d, k) => {
+    d.style.cursor = 'pointer';
+    d.addEventListener('click', (e) => { e.stopPropagation(); manual(k); });
+  });
+  // The card itself advances too, so a missed click on the button still works.
+  tour.addEventListener('click', () => manual(i + 1));
 })();
 
 // ------------------------------------------------------------- session

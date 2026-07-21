@@ -563,6 +563,7 @@
   }
   [data-tip] kbd { font-family: var(--mono); }
 
+  .iconBtn svg { width: 15px; height: 15px; display: block; }
   .iconBtn {
     width: 30px; height: 30px;
     flex-shrink: 0;
@@ -680,11 +681,8 @@
         </p>
 
         <div class="obBtns">
-          <a class="obBtn primary" href="https://baz.studio/skills" target="_blank" rel="noopener">
+          <a class="obBtn primary" id="obSkills" href="https://baz.studio/skills" target="_blank" rel="noopener">
             Browse video skills ↗
-          </a>
-          <a class="obBtn" href="https://github.com/bazaar-it/baz-for-claude" target="_blank" rel="noopener">
-            How it works ↗
           </a>
         </div>
 
@@ -766,9 +764,9 @@
       <div id="inputBar">
         <span id="ghostHint"></span>
         <span class="spacer"></span>
-        <button id="transition" class="iconBtn" data-tip="Match cut — grabs the frames either side of the nearest cut and suggests a prompt">⇄</button>
-        <button id="attach" class="iconBtn" data-tip="Attach a reference image — or just paste / drop one in">⊕</button>
-        <button id="send" class="iconBtn primary" disabled data-tip="Send to Claude — Enter (Shift+Enter for a new line)">↑</button>
+        <button id="transition" class="iconBtn" data-tip="Scene transition">⇄</button>
+        <button id="attach" class="iconBtn" data-tip="Attach image" aria-label="Attach image"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+        <button id="send" class="iconBtn primary" disabled aria-label="Send">↑</button>
       </div>
       <input id="filePick" type="file" accept="image/*" multiple hidden />
       <div id="dropHint">Drop reference images</div>
@@ -816,6 +814,20 @@ function toast(msg, isErr) {
   clearTimeout(t._t);
   t._t = setTimeout(() => (t.className = ''), 2200);
 }
+
+// Claude's browser pane blocks BOTH target="_blank" and window.open, so a plain
+// external anchor silently does nothing there — the link looks broken. Try a new
+// tab (works in a normal browser), and fall back to this one when it's blocked.
+(() => {
+  const link = $('obSkills');
+  if (!link) return;
+  link.addEventListener('click', (e) => {
+    e.preventDefault();
+    let opened = null;
+    try { opened = window.open(link.href, '_blank', 'noopener'); } catch { /* blocked */ }
+    if (!opened) location.href = link.href;
+  });
+})();
 
 // ------------------------------------------------------------- onboarding tour
 // One step at a time; Next wraps around so it can't dead-end.

@@ -126,11 +126,14 @@
     font-family: var(--mono); font-size: 10.5px; color: #DDD7CB;
   }
 
-  /* Animation stage — each scene is pure CSS, looping while its slide is shown. */
+  /* Animation stage — each scene is pure CSS, looping while its slide is shown.
+     16:9 and centred so it reads as a video player, not a letterbox strip. */
   .obAnim {
     position: relative;
-    height: 108px;
-    margin-bottom: 14px;
+    width: 100%;
+    max-width: 400px;
+    aspect-ratio: 16 / 9;
+    margin: 0 auto 16px;
     border-radius: 9px;
     background: rgba(0,0,0,.28);
     overflow: hidden;
@@ -138,7 +141,7 @@
 
   /* --- 1: a chat line types, the player drops in --- */
   .a1bar {
-    position: absolute; left: 14px; top: 20px; right: 14px; height: 24px;
+    position: absolute; left: 20px; top: 44px; right: 20px; height: 30px;
     background: rgba(255,255,255,.08); border-radius: 6px;
     display: flex; align-items: center; padding: 0 9px; gap: 1px;
     font-size: 11px; color: #DDD7CB; font-family: var(--mono);
@@ -148,7 +151,7 @@
   .a1car { width: 1.5px; height: 12px; background: var(--accent); flex-shrink: 0; }
   .on .a1car { animation: a1blink .7s steps(1) infinite; }
   .a1frame {
-    position: absolute; left: 14px; right: 14px; top: 56px; height: 38px;
+    position: absolute; left: 20px; right: 20px; top: 88px; height: 94px;
     border-radius: 6px; background: rgba(255,255,255,.1);
     opacity: 0; display: flex; align-items: center; justify-content: center;
   }
@@ -163,51 +166,51 @@
 
   /* --- 2: playhead scrubs, stops, a note appears carrying the frame --- */
   .a2frame {
-    position: absolute; left: 14px; top: 14px; width: 96px; height: 54px;
+    position: absolute; left: 20px; top: 62px; width: 150px; height: 84px;
     border-radius: 5px;
     background: linear-gradient(135deg, rgba(123,229,164,.35), rgba(255,255,255,.12));
   }
   .a2bar {
-    position: absolute; left: 14px; top: 76px; width: 96px; height: 7px;
+    position: absolute; left: 20px; top: 156px; width: 150px; height: 8px;
     border-radius: 99px; background: rgba(255,255,255,.14);
   }
   .a2head {
-    position: absolute; top: -3px; left: 0; width: 13px; height: 13px;
+    position: absolute; top: -3px; left: 0; width: 14px; height: 14px;
     border-radius: 50%; background: var(--accent);
   }
   .on .a2head { animation: a2scrub 4s ease-in-out infinite; }
   .a2note {
-    position: absolute; left: 124px; top: 20px; right: 14px; height: 44px;
+    position: absolute; left: 186px; top: 68px; right: 20px; height: 72px;
     border-radius: 6px; background: rgba(255,255,255,.1);
-    padding: 9px 10px; opacity: 0;
+    padding: 12px 12px; opacity: 0;
   }
   .a2note u, .a2note em {
     display: block; height: 5px; border-radius: 99px; background: rgba(255,255,255,.32);
   }
   .a2note u { width: 74%; }
-  .a2note em { width: 46%; margin-top: 6px; background: rgba(123,229,164,.55); }
+  .a2note em { width: 46%; margin-top: 9px; background: rgba(123,229,164,.55); }
   .on .a2note { animation: a2note 4s ease infinite; }
-  @keyframes a2scrub { 0% {left:0} 45% {left:70px} 100% {left:70px} }
+  @keyframes a2scrub { 0% {left:0} 45% {left:118px} 100% {left:118px} }
   @keyframes a2note { 0%,50% {opacity:0; transform:translateX(-5px)} 64%,100% {opacity:1; transform:none} }
 
   /* --- 3: a batch of notes fans out to agents running at once --- */
-  .a3notes { position: absolute; left: 16px; top: 22px; display: grid; gap: 6px; }
+  .a3notes { position: absolute; left: 22px; top: 78px; display: grid; gap: 8px; }
   .a3notes i {
-    display: block; width: 78px; height: 15px; border-radius: 4px;
+    display: block; width: 92px; height: 18px; border-radius: 4px;
     background: rgba(255,255,255,.14); opacity: 0;
   }
   .on .a3notes i { animation: a3note 4s ease infinite; }
   .on .a3notes i:nth-child(2) { animation-delay: .28s; }
   .on .a3notes i:nth-child(3) { animation-delay: .56s; }
   .a3flow {
-    position: absolute; left: 100px; top: 52px; width: 42px; height: 2px;
+    position: absolute; left: 122px; top: 112px; width: 52px; height: 2px;
     background: linear-gradient(90deg, rgba(123,229,164,0), rgba(123,229,164,.75));
     opacity: 0;
   }
   .on .a3flow { animation: a3flow 4s ease infinite; }
-  .a3agents { position: absolute; right: 18px; top: 22px; display: grid; gap: 6px; }
+  .a3agents { position: absolute; right: 22px; top: 78px; display: grid; gap: 8px; }
   .a3agents i {
-    display: block; width: 62px; height: 15px; border-radius: 4px;
+    display: block; width: 78px; height: 18px; border-radius: 4px;
     background: rgba(123,229,164,.22);
     border-left: 2px solid var(--accent);
     opacity: 0;
@@ -221,22 +224,19 @@
     30%,100% {opacity:1; background:rgba(123,229,164,.34)}
   }
 
+  /* Counter and Next sit together in the middle, so the step count reads as
+     part of the control rather than a detail parked in the corner. */
   .obNav {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; justify-content: center; gap: 14px;
     margin-top: 16px; padding-top: 13px;
     border-top: 1px solid rgba(255,255,255,.08);
   }
-  .obDots { display: flex; }
-  .obDots i {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: rgba(255,255,255,.22);
-    transition: background .15s, width .15s;
-    /* Padding enlarges the hit area; content-box clipping keeps the dot small. */
-    box-sizing: content-box;
-    padding: 8px 5px;
-    background-clip: content-box;
+  #obCount {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    color: #A9A296;
   }
-  .obDots i.on { background: var(--accent); width: 16px; border-radius: 99px; }
   #obNext {
     background: rgba(255,255,255,.1); color: #F0EBE0;
     border-color: rgba(255,255,255,.2);
@@ -705,8 +705,9 @@
               <div class="a2bar"><i class="a2head"></i></div>
               <div class="a2note"><u></u><em></em></div>
             </div>
-            <b>Stop on the moment, type it</b>
-            <span>Hit <kbd>↵</kbd>. The exact frame goes with it.</span>
+            <b>Prompt your edits</b>
+            <span>and the frame number and a reference screenshot will be sent to a
+            Claude subagent.</span>
           </div>
 
           <!-- Step 3 — a batch of notes fanning out to parallel agents. -->
@@ -721,7 +722,7 @@
           </div>
 
           <div class="obNav">
-            <div class="obDots"><i class="on"></i><i></i><i></i></div>
+            <span id="obCount">1 of 3</span>
             <button id="obNext">Next</button>
           </div>
         </div>
@@ -832,14 +833,14 @@ function toast(msg, isErr) {
 
 // ------------------------------------------------------------- onboarding tour
 // Advances on its own so every step is seen even if a click never lands, and
-// hands control over the moment you interact. Clickable via Next, the dots, or
-// anywhere on the card — several targets rather than one small button.
+// hands control over the moment you interact. Next or anywhere on the card
+// advances it — a near-miss on the button still works.
 (() => {
   const tour = $('obTour');
   const next = $('obNext');
   if (!tour || !next) return;
   const slides = [...tour.querySelectorAll('.obSlide')];
-  const dots = [...tour.querySelectorAll('.obDots i')];
+  const count = $('obCount');
   let i = 0;
   let auto = setInterval(() => go(i + 1), 6500);
 
@@ -853,7 +854,7 @@ function toast(msg, isErr) {
     i = ((n % slides.length) + slides.length) % slides.length;
     // Toggling .on restarts each scene's CSS animations from the top.
     slides.forEach((s, k) => s.classList.toggle('on', k === i));
-    dots.forEach((d, k) => d.classList.toggle('on', k === i));
+    if (count) count.textContent = `${i + 1} of ${slides.length}`;
     next.textContent = i === slides.length - 1 ? 'Start over' : 'Next';
   }
   function manual(n) {
@@ -863,12 +864,9 @@ function toast(msg, isErr) {
   }
 
   next.addEventListener('click', (e) => { e.stopPropagation(); manual(i + 1); });
-  dots.forEach((d, k) => {
-    d.style.cursor = 'pointer';
-    d.addEventListener('click', (e) => { e.stopPropagation(); manual(k); });
-  });
   // The card itself advances too, so a missed click on the button still works.
   tour.addEventListener('click', () => manual(i + 1));
+  go(0);
 })();
 
 // ------------------------------------------------------------- session

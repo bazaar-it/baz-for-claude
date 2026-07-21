@@ -60,20 +60,116 @@
     outline: none;
     display: block;
   }
+  /* ---------- onboarding (shown until a video loads) ---------- */
+  /* Light-on-dark: it sits on the video stage, so it reads as a player splash. */
   #empty {
-    color: var(--dimmer);
-    text-align: center;
-    font-size: 14px;
-    line-height: 2;
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 6vh 24px 40px;
   }
-  /* Fallback entry when launched without --url. */
-  #emptyForm {
-    display: flex; gap: 7px; justify-content: center;
-    margin-top: 14px; width: 420px; max-width: 70vw;
+  #onboard { width: 100%; max-width: 620px; color: #E8E4DA; }
+  #obMark {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-style: italic;
+    font-size: 26px;
+    color: #F0EBE0;
+    margin-bottom: 18px;
   }
-  #emptyForm input { margin: 0; background: rgba(255,255,255,.06); color: #ddd; border-color: rgba(255,255,255,.16); }
-  #emptyForm button { background: rgba(255,255,255,.1); color: #ddd; border-color: rgba(255,255,255,.16); flex-shrink: 0; }
-  #emptyForm button:hover { background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.3); }
+  #obMark span { opacity: .5; }
+  #onboard h1 {
+    margin: 0 0 10px;
+    font-size: 27px;
+    font-weight: 500;
+    letter-spacing: -.02em;
+    color: #F5F2EA;
+  }
+  .obLede { margin: 0 0 22px; font-size: 14px; line-height: 1.6; color: #A9A296; }
+
+  #emptyForm { display: flex; gap: 8px; }
+  #emptyForm input {
+    margin: 0; font-size: 13px;
+    background: rgba(255,255,255,.06);
+    color: #F0EBE0;
+    border-color: rgba(255,255,255,.16);
+  }
+  #emptyForm input::placeholder { color: #8A8377; }
+  #emptyForm input:focus { border-color: var(--accent); }
+  #emptyForm button {
+    flex-shrink: 0; font-weight: 600;
+    background: var(--accent-grad); color: #0A0A0A; border-color: transparent;
+  }
+  #emptyForm button:hover { background: linear-gradient(135deg,#8CEDB1,#6ADDA0); border-color: transparent; }
+  .obNote { margin-top: 9px; font-size: 12px; color: #8A8377; }
+  .obNote .mono { color: #B9B2A5; }
+
+  .obSteps {
+    margin: 30px 0 0;
+    border-top: 1px solid rgba(255,255,255,.1);
+  }
+  .obStep {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 3px 12px;
+    padding: 15px 0;
+    border-bottom: 1px solid rgba(255,255,255,.07);
+    font-size: 13px;
+  }
+  .obNum {
+    grid-row: span 2;
+    width: 24px; height: 24px;
+    border-radius: 50%;
+    background: rgba(95,211,148,.16);
+    color: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 600;
+    font-family: var(--mono);
+  }
+  .obStep b { color: #F0EBE0; font-weight: 600; }
+  .obStep span:last-child { color: #A9A296; line-height: 1.65; }
+  .obStep kbd {
+    background: rgba(255,255,255,.09);
+    border: 1px solid rgba(255,255,255,.16);
+    border-radius: 4px; padding: 1px 5px;
+    font-family: var(--mono); font-size: 10.5px;
+    color: #DDD7CB;
+  }
+
+  .obHow {
+    margin-top: 20px;
+    font-size: 12.5px;
+    line-height: 1.65;
+    color: #A9A296;
+    background: rgba(255,255,255,.04);
+    border-left: 2px solid rgba(95,211,148,.5);
+    padding: 12px 14px;
+    border-radius: 0 8px 8px 0;
+  }
+  .obHow b { color: #E8E4DA; }
+
+  .obBtns { display: flex; gap: 10px; margin-top: 24px; flex-wrap: wrap; }
+  .obBtn {
+    text-decoration: none;
+    font-size: 13px; font-weight: 500;
+    padding: 9px 16px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,.18);
+    color: #E8E4DA;
+    background: rgba(255,255,255,.05);
+  }
+  .obBtn:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.32); }
+  .obBtn.primary {
+    background: var(--accent-grad); color: #0A0A0A;
+    border-color: transparent; font-weight: 600;
+  }
+  .obBtn.primary:hover { background: linear-gradient(135deg,#8CEDB1,#6ADDA0); }
+
+  /* No video yet → the onboarding owns the whole window. */
+  body.empty #transport, body.empty #side, body.empty #wordmark { display: none; }
+  body.empty #videoWrap { align-items: stretch; }
 
   /* frame flash on capture */
   #flash {
@@ -433,15 +529,58 @@
 
 <div id="stage">
   <div id="videoWrap">
-    <!-- Fallback only. Claude normally passes --url / --project at launch. -->
+    <!-- Onboarding. Shown until a video loads; Claude normally passes --url. -->
     <div id="empty">
-      No video loaded
-      <div style="font-size:12px; margin-top:6px">
-        Start with <span class="mono">npx baz-for-claude --url &lt;video-url&gt;</span>
-      </div>
-      <div id="emptyForm">
-        <input id="url" placeholder="…or paste a hosted video URL" spellcheck="false" />
-        <button id="load">Load</button>
+      <div id="onboard">
+        <div id="obMark">baz <span>for claude</span></div>
+        <h1>Frame-accurate video feedback</h1>
+        <p class="obLede">
+          Pause on a frame, type what's wrong, and it reaches your AI agent with the
+          exact frame number and a still of that frame — instead of “fix the bit
+          around 12 seconds”.
+        </p>
+
+        <div id="emptyForm">
+          <input id="url" placeholder="Paste a hosted video URL (https://…)" spellcheck="false" />
+          <button id="load">Load</button>
+        </div>
+        <div class="obNote">
+          Or launch it with one:
+          <span class="mono">npx baz-for-claude --project &lt;id&gt;</span>
+        </div>
+
+        <div class="obSteps">
+          <div class="obStep">
+            <span class="obNum">1</span>
+            <b>Find the frame</b>
+            <span><kbd>Space</kbd> or click to play · <kbd>←</kbd><kbd>→</kbd> step a frame · drag the bar to scrub</span>
+          </div>
+          <div class="obStep">
+            <span class="obNum">2</span>
+            <b>Say what's wrong</b>
+            <span><kbd>F</kbd> jumps to the note box. Paste or drop reference screenshots straight in. <kbd>⇄</kbd> grabs both frames either side of a cut for match-cut notes.</span>
+          </div>
+          <div class="obStep">
+            <span class="obNum">3</span>
+            <b>Send it</b>
+            <span><kbd>⌘</kbd><kbd>↵</kbd> — the note lands in your agent's chat with the frame, scene and a screenshot. It's copied to your clipboard too.</span>
+          </div>
+        </div>
+
+        <div class="obHow">
+          <b>How it reaches Claude:</b> there's no hidden connection — this server
+          appends each note to a log file, and your agent tails it. Ask Claude to
+          <i>“watch for my video notes”</i> and they stream in live.
+        </div>
+
+        <div class="obBtns">
+          <a class="obBtn primary" href="https://baz.studio/skills" target="_blank" rel="noopener">
+            Browse video skills ↗
+          </a>
+          <a class="obBtn" href="https://github.com/bazaar-it/baz-for-claude" target="_blank" rel="noopener">
+            How it works ↗
+          </a>
+        </div>
       </div>
     </div>
     <video id="v" playsinline preload="auto" style="display:none"></video>
@@ -528,6 +667,8 @@ async function loadSession() {
   S = await (await fetch('/api/session')).json();
   prepScenes();
   $('url').value = S.url || '';
+  // No video → onboarding takes the whole window instead of a dead player.
+  document.body.classList.toggle('empty', !S.url);
   if (S.url) attach(S.url);
   drawScenes();
   loadNotes();
@@ -574,6 +715,7 @@ function attach(url) {
   v.src = '/stream?u=' + encodeURIComponent(url);
   v.style.display = '';
   $('empty').style.display = 'none';
+  document.body.classList.remove('empty'); // onboarding gives the window back
   v.load();
 }
 

@@ -107,41 +107,146 @@
   }
   #emptyForm button:hover { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.3); }
 
-  .obSteps {
-    margin: 30px 0 0;
-    border-top: 1px solid rgba(255,255,255,.1);
+  /* ---------- one-at-a-time tour ---------- */
+  #obTour {
+    margin-top: 26px;
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.09);
+    border-radius: 14px;
+    padding: 18px 20px 14px;
   }
-  .obStep {
-    display: grid;
-    grid-template-columns: 26px 1fr;
-    gap: 3px 12px;
-    padding: 15px 0;
-    border-bottom: 1px solid rgba(255,255,255,.07);
-    font-size: 13px;
-  }
-  .obNum {
-    grid-row: span 2;
-    width: 24px; height: 24px;
-    border-radius: 50%;
-    background: rgba(95,211,148,.16);
-    color: var(--accent);
-    display: flex; align-items: center; justify-content: center;
-    font-size: 12px; font-weight: 600;
-    font-family: var(--mono);
-  }
-  .obStep b { color: #F0EBE0; font-weight: 600; }
-  .obStep span:last-child { color: #A9A296; line-height: 1.65; }
-  .obStep kbd {
-    background: rgba(255,255,255,.09);
-    border: 1px solid rgba(255,255,255,.16);
+  .obSlide { display: none; }
+  .obSlide.on { display: block; }
+  .obSlide b { display: block; color: #F0EBE0; font-size: 14.5px; font-weight: 600; }
+  .obSlide > span { display: block; margin-top: 3px; color: #A9A296; font-size: 13px; }
+  .obSlide kbd {
+    background: rgba(255,255,255,.1);
+    border: 1px solid rgba(255,255,255,.18);
     border-radius: 4px; padding: 1px 5px;
-    font-family: var(--mono); font-size: 10.5px;
-    color: #DDD7CB;
+    font-family: var(--mono); font-size: 10.5px; color: #DDD7CB;
+  }
+
+  /* Animation stage — each scene is pure CSS, looping while its slide is shown. */
+  .obAnim {
+    position: relative;
+    height: 108px;
+    margin-bottom: 14px;
+    border-radius: 9px;
+    background: rgba(0,0,0,.28);
+    overflow: hidden;
+  }
+
+  /* --- 1: a chat line types, the player drops in --- */
+  .a1bar {
+    position: absolute; left: 14px; top: 20px; right: 14px; height: 24px;
+    background: rgba(255,255,255,.08); border-radius: 6px;
+    display: flex; align-items: center; padding: 0 9px; gap: 1px;
+    font-size: 11px; color: #DDD7CB; font-family: var(--mono);
+  }
+  .a1txt { white-space: nowrap; overflow: hidden; width: 0; }
+  .on .a1txt { animation: a1type 3.6s steps(19) infinite; }
+  .a1car { width: 1.5px; height: 12px; background: var(--accent); flex-shrink: 0; }
+  .on .a1car { animation: a1blink .7s steps(1) infinite; }
+  .a1frame {
+    position: absolute; left: 14px; right: 14px; top: 56px; height: 38px;
+    border-radius: 6px; background: rgba(255,255,255,.1);
+    opacity: 0; display: flex; align-items: center; justify-content: center;
+  }
+  .a1frame i {
+    width: 0; height: 0; border-left: 9px solid rgba(255,255,255,.5);
+    border-top: 6px solid transparent; border-bottom: 6px solid transparent;
+  }
+  .on .a1frame { animation: a1in 3.6s ease infinite; }
+  @keyframes a1type { 0% {width:0} 45% {width:118px} 100% {width:118px} }
+  @keyframes a1blink { 0%,49% {opacity:1} 50%,100% {opacity:0} }
+  @keyframes a1in { 0%,50% {opacity:0; transform:translateY(6px)} 62%,100% {opacity:1; transform:none} }
+
+  /* --- 2: playhead scrubs, stops, a note appears carrying the frame --- */
+  .a2frame {
+    position: absolute; left: 14px; top: 14px; width: 96px; height: 54px;
+    border-radius: 5px;
+    background: linear-gradient(135deg, rgba(123,229,164,.35), rgba(255,255,255,.12));
+  }
+  .a2bar {
+    position: absolute; left: 14px; top: 76px; width: 96px; height: 7px;
+    border-radius: 99px; background: rgba(255,255,255,.14);
+  }
+  .a2head {
+    position: absolute; top: -3px; left: 0; width: 13px; height: 13px;
+    border-radius: 50%; background: var(--accent);
+  }
+  .on .a2head { animation: a2scrub 4s ease-in-out infinite; }
+  .a2note {
+    position: absolute; left: 124px; top: 20px; right: 14px; height: 44px;
+    border-radius: 6px; background: rgba(255,255,255,.1);
+    padding: 9px 10px; opacity: 0;
+  }
+  .a2note u, .a2note em {
+    display: block; height: 5px; border-radius: 99px; background: rgba(255,255,255,.32);
+  }
+  .a2note u { width: 74%; }
+  .a2note em { width: 46%; margin-top: 6px; background: rgba(123,229,164,.55); }
+  .on .a2note { animation: a2note 4s ease infinite; }
+  @keyframes a2scrub { 0% {left:0} 45% {left:70px} 100% {left:70px} }
+  @keyframes a2note { 0%,50% {opacity:0; transform:translateX(-5px)} 64%,100% {opacity:1; transform:none} }
+
+  /* --- 3: a batch of notes fans out to agents running at once --- */
+  .a3notes { position: absolute; left: 16px; top: 22px; display: grid; gap: 6px; }
+  .a3notes i {
+    display: block; width: 78px; height: 15px; border-radius: 4px;
+    background: rgba(255,255,255,.14); opacity: 0;
+  }
+  .on .a3notes i { animation: a3note 4s ease infinite; }
+  .on .a3notes i:nth-child(2) { animation-delay: .28s; }
+  .on .a3notes i:nth-child(3) { animation-delay: .56s; }
+  .a3flow {
+    position: absolute; left: 100px; top: 52px; width: 42px; height: 2px;
+    background: linear-gradient(90deg, rgba(123,229,164,0), rgba(123,229,164,.75));
+    opacity: 0;
+  }
+  .on .a3flow { animation: a3flow 4s ease infinite; }
+  .a3agents { position: absolute; right: 18px; top: 22px; display: grid; gap: 6px; }
+  .a3agents i {
+    display: block; width: 62px; height: 15px; border-radius: 4px;
+    background: rgba(123,229,164,.22);
+    border-left: 2px solid var(--accent);
+    opacity: 0;
+  }
+  .on .a3agents i { animation: a3agent 4s ease infinite; animation-delay: 1.5s; }
+  @keyframes a3note { 0% {opacity:0; transform:translateX(-6px)} 14%,100% {opacity:1; transform:none} }
+  @keyframes a3flow { 0%,32% {opacity:0} 42%,100% {opacity:1} }
+  @keyframes a3agent {
+    0% {opacity:0; transform:translateX(6px)}
+    12% {opacity:1; transform:none}
+    30%,100% {opacity:1; background:rgba(123,229,164,.34)}
+  }
+
+  .obNav {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 16px; padding-top: 13px;
+    border-top: 1px solid rgba(255,255,255,.08);
+  }
+  .obDots { display: flex; gap: 6px; }
+  .obDots i {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: rgba(255,255,255,.22);
+    transition: background .15s, width .15s;
+  }
+  .obDots i.on { background: var(--accent); width: 16px; border-radius: 99px; }
+  #obNext {
+    background: rgba(255,255,255,.1); color: #F0EBE0;
+    border-color: rgba(255,255,255,.2);
+    padding: 5px 14px; font-size: 12.5px;
+  }
+  #obNext:hover { background: rgba(255,255,255,.18); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .obAnim * { animation: none !important; opacity: 1 !important; }
   }
 
   .obHow {
-    margin-top: 20px;
-    font-size: 12.5px;
+    margin-top: 14px;
+    font-size: 12px;
     line-height: 1.65;
     color: #A9A296;
     background: rgba(255,255,255,.04);
@@ -583,33 +688,48 @@
           </a>
         </div>
 
-        <div class="obSteps">
-          <div class="obStep">
-            <span class="obNum">1</span>
+        <div id="obTour">
+          <!-- Step 1 — a chat line typing, then the player appearing. -->
+          <div class="obSlide on">
+            <div class="obAnim">
+              <div class="a1bar"><span class="a1txt">open my baz project</span><i class="a1car"></i></div>
+              <div class="a1frame"><i></i></div>
+            </div>
             <b>Ask Claude to open a project</b>
-            <span>Say <i>“open my baz project in the editor”</i> and it starts this
-            editor on your video. No URLs to copy.</span>
+            <span>No URLs to copy.</span>
           </div>
-          <div class="obStep">
-            <span class="obNum">2</span>
-            <b>Go to the moment and type it</b>
-            <span><kbd>Space</kbd> or click to play · <kbd>←</kbd><kbd>→</kbd> step a
-            frame · drag the bar to scrub. Then <kbd>F</kbd> to write, <kbd>↵</kbd> to
-            send. Each note carries that exact frame and a screenshot of it, so
-            “this bit” is never ambiguous.</span>
+
+          <!-- Step 2 — scrub to a frame, note appears carrying it. -->
+          <div class="obSlide">
+            <div class="obAnim">
+              <div class="a2frame"></div>
+              <div class="a2bar"><i class="a2head"></i></div>
+              <div class="a2note"><u></u><em></em></div>
+            </div>
+            <b>Stop on the moment, type it</b>
+            <span>Hit <kbd>↵</kbd>. The exact frame goes with it.</span>
           </div>
-          <div class="obStep">
-            <span class="obNum">3</span>
-            <b>Fire off as many as you like</b>
-            <span>Notes reach Claude through the system log, so you don't wait for a
-            reply between them. Send a whole batch and Claude spins up an agent per
-            scene to work them in parallel.</span>
+
+          <!-- Step 3 — a batch of notes fanning out to parallel agents. -->
+          <div class="obSlide">
+            <div class="obAnim">
+              <div class="a3notes"><i></i><i></i><i></i></div>
+              <div class="a3flow"></div>
+              <div class="a3agents"><i></i><i></i><i></i></div>
+            </div>
+            <b>Send as many as you like</b>
+            <span>Claude works them in parallel.</span>
+          </div>
+
+          <div class="obNav">
+            <div class="obDots"><i class="on"></i><i></i><i></i></div>
+            <button id="obNext">Next</button>
           </div>
         </div>
 
         <div class="obHow">
-          <b>Billing:</b> this runs on your Claude usage limits wherever possible.
-          Only third-party tools are charged to your baz account.
+          Runs on your Claude usage limits where possible — only third-party tools
+          are charged to your baz account.
         </div>
 
         <div id="emptyForm">
@@ -696,6 +816,23 @@ function toast(msg, isErr) {
   clearTimeout(t._t);
   t._t = setTimeout(() => (t.className = ''), 2200);
 }
+
+// ------------------------------------------------------------- onboarding tour
+// One step at a time; Next wraps around so it can't dead-end.
+(() => {
+  const next = $('obNext');
+  if (!next) return;
+  const slides = [...document.querySelectorAll('.obSlide')];
+  const dots = [...document.querySelectorAll('.obDots i')];
+  let i = 0;
+  next.onclick = () => {
+    i = (i + 1) % slides.length;
+    // Toggling .on restarts each scene's CSS animations from the top.
+    slides.forEach((s, n) => s.classList.toggle('on', n === i));
+    dots.forEach((d, n) => d.classList.toggle('on', n === i));
+    next.textContent = i === slides.length - 1 ? 'Start over' : 'Next';
+  };
+})();
 
 // ------------------------------------------------------------- session
 async function loadSession() {

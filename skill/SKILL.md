@@ -31,6 +31,26 @@ Pass `--url` to pin a specific video (that wins over auto-sync).
 Note: `baz export list` is a *recent* window, so an older export may not be
 findable — pass `--url` in that case.
 
+### Open it in the Claude browser, not an external one
+
+Always launch with `--no-open` (so it doesn't fire off the system browser) and
+then open `http://localhost:<port>` in **Claude's own browser pane**. In Claude
+Code that's `preview_start` with `{url: "http://localhost:<port>"}`.
+
+This is the intended setup:
+
+- **Review and chat stay in one window.** The user pauses, types a note, and
+  your reply is right there — no alt-tabbing between an external browser and
+  the conversation for every note.
+- **You can see the same page they can.** Screenshot it, read the console,
+  check the video actually loaded. In an external browser the UI is invisible
+  to you, so "it's not playing" or "nothing happened" becomes guesswork.
+- **You can confirm it came up** instead of telling the user to go look.
+
+It still works in Chrome or Safari — same server, same notes — you just lose
+all of the above. Don't hand the user a bare localhost URL and ask them to open
+it themselves unless they've said they want it in their own browser.
+
 ## Receive the notes
 
 The server prints a tail command on startup. Arm it with the **Monitor** tool

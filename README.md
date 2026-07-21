@@ -94,6 +94,16 @@ curl -o ~/.claude/skills/baz-for-claude/SKILL.md \
 
 Now any Claude session in any repo knows how to run a review.
 
+### Run it in Claude's browser
+
+Open `http://localhost:<port>` in **Claude's own browser pane** rather than
+Chrome or Safari. Review and chat stay in one window, so you're not alt-tabbing
+for every note — and Claude can see the same page you can, screenshot it, and
+check the console, which turns "it's not playing" from guesswork into something
+it can actually diagnose. The skill tells it to do this by default.
+
+It works in any browser — same server, same notes — you just lose those.
+
 ## Usage
 
 ```

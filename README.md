@@ -46,8 +46,9 @@ In **Claude Code**, ask it to *"watch for my video notes"* — it arms the tail
 command the server prints on startup and notes stream in live. The same tail
 works for any agent that can watch a file, or you can just read it yourself.
 
-Every note is also copied to your clipboard when you send it, so you can paste
-it manually if nothing is listening.
+Sending doesn't touch your clipboard — the log is the delivery path. If you ever
+need a note as text (nothing was watching, or you want it elsewhere), each one in
+the history has a **⧉** to copy it.
 
 The UI itself stays deliberately bare — you see a timecode, nothing else. Frame
 numbers, scene ids and layer stacks are resolved server-side and ride in the
@@ -117,6 +118,7 @@ npx baz-for-claude [options]
   --no-thumbs        Skip frame capture (notes carry timecode only)
   --no-open          Don't auto-open the browser
   --replay           Print every past note for this port, then exit
+  --sync-interval <s>  Check for a newer export every N seconds (default 30, 0 = off)
 ```
 
 The URL must be **hosted** (http/https) — an S3, R2, or CDN link. Local files
@@ -131,7 +133,7 @@ already live somewhere.
 | `←` `→` (or `,` `.`) | step one frame |
 | `⇧` + `←` `→` | step ten frames |
 | `f` | pause and jump to the feedback box |
-| `⌘↵` | send |
+| `↵` | send (`⇧↵` for a new line) |
 
 Drag the playhead to scrub; click a note's timecode to jump back to that frame.
 

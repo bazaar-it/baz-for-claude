@@ -89,7 +89,9 @@
   }
   .obLede { margin: 0 0 22px; font-size: 14px; line-height: 1.6; color: #A9A296; }
 
-  #emptyForm { display: flex; gap: 8px; }
+  /* Manual fallback — the normal path is Claude opening a project for you. */
+  #emptyForm { display: flex; gap: 8px; margin-top: 22px; opacity: .72; }
+  #emptyForm:focus-within { opacity: 1; }
   #emptyForm input {
     margin: 0; font-size: 13px;
     background: rgba(255,255,255,.06);
@@ -99,12 +101,11 @@
   #emptyForm input::placeholder { color: #8A8377; }
   #emptyForm input:focus { border-color: var(--accent); }
   #emptyForm button {
-    flex-shrink: 0; font-weight: 600;
-    background: var(--accent-grad); color: #0A0A0A; border-color: transparent;
+    flex-shrink: 0;
+    background: rgba(255,255,255,.09); color: #E8E4DA;
+    border-color: rgba(255,255,255,.18);
   }
-  #emptyForm button:hover { background: linear-gradient(135deg,#8CEDB1,#6ADDA0); border-color: transparent; }
-  .obNote { margin-top: 9px; font-size: 12px; color: #8A8377; }
-  .obNote .mono { color: #B9B2A5; }
+  #emptyForm button:hover { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.3); }
 
   .obSteps {
     margin: 30px 0 0;
@@ -150,7 +151,7 @@
   }
   .obHow b { color: #E8E4DA; }
 
-  .obBtns { display: flex; gap: 10px; margin-top: 24px; flex-wrap: wrap; }
+  .obBtns { display: flex; gap: 10px; margin: 4px 0 4px; flex-wrap: wrap; }
   .obBtn {
     text-decoration: none;
     font-size: 13px; font-weight: 500;
@@ -424,6 +425,39 @@
     align-self: auto;
   }
 
+  /* Tooltips. Native title= waits ~1s and can't be styled, and these buttons
+     are icon-only — they need to explain themselves instantly. */
+  [data-tip] { position: relative; }
+  [data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    background: #1B1E23;
+    color: #F0EBE0;
+    font-size: 11.5px;
+    font-weight: 400;
+    line-height: 1.4;
+    letter-spacing: 0;
+    padding: 6px 9px;
+    border-radius: 7px;
+    width: max-content;
+    max-width: 220px;
+    white-space: normal;
+    text-align: left;
+    box-shadow: 0 6px 20px rgba(0,0,0,.28);
+    opacity: 0;
+    transform: translateY(3px);
+    transition: opacity .12s, transform .12s;
+    pointer-events: none;
+    z-index: 30;
+  }
+  [data-tip]:hover::after, [data-tip]:focus-visible::after {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  [data-tip] kbd { font-family: var(--mono); }
+
   .iconBtn {
     width: 30px; height: 30px;
     flex-shrink: 0;
@@ -540,39 +574,6 @@
           around 12 seconds”.
         </p>
 
-        <div id="emptyForm">
-          <input id="url" placeholder="Paste a hosted video URL (https://…)" spellcheck="false" />
-          <button id="load">Load</button>
-        </div>
-        <div class="obNote">
-          Or launch it with one:
-          <span class="mono">npx baz-for-claude --project &lt;id&gt;</span>
-        </div>
-
-        <div class="obSteps">
-          <div class="obStep">
-            <span class="obNum">1</span>
-            <b>Find the frame</b>
-            <span><kbd>Space</kbd> or click to play · <kbd>←</kbd><kbd>→</kbd> step a frame · drag the bar to scrub</span>
-          </div>
-          <div class="obStep">
-            <span class="obNum">2</span>
-            <b>Say what's wrong</b>
-            <span><kbd>F</kbd> jumps to the note box. Paste or drop reference screenshots straight in. <kbd>⇄</kbd> grabs both frames either side of a cut for match-cut notes.</span>
-          </div>
-          <div class="obStep">
-            <span class="obNum">3</span>
-            <b>Send it</b>
-            <span><kbd>⌘</kbd><kbd>↵</kbd> — the note lands in your agent's chat with the frame, scene and a screenshot. It's copied to your clipboard too.</span>
-          </div>
-        </div>
-
-        <div class="obHow">
-          <b>How it reaches Claude:</b> there's no hidden connection — this server
-          appends each note to a log file, and your agent tails it. Ask Claude to
-          <i>“watch for my video notes”</i> and they stream in live.
-        </div>
-
         <div class="obBtns">
           <a class="obBtn primary" href="https://baz.studio/skills" target="_blank" rel="noopener">
             Browse video skills ↗
@@ -580,6 +581,40 @@
           <a class="obBtn" href="https://github.com/bazaar-it/baz-for-claude" target="_blank" rel="noopener">
             How it works ↗
           </a>
+        </div>
+
+        <div class="obSteps">
+          <div class="obStep">
+            <span class="obNum">1</span>
+            <b>Ask Claude to open a project</b>
+            <span>Say <i>“open my baz project in the editor”</i> and it starts this
+            editor on your video. No URLs to copy.</span>
+          </div>
+          <div class="obStep">
+            <span class="obNum">2</span>
+            <b>Go to the moment and type it</b>
+            <span><kbd>Space</kbd> or click to play · <kbd>←</kbd><kbd>→</kbd> step a
+            frame · drag the bar to scrub. Then <kbd>F</kbd> to write, <kbd>↵</kbd> to
+            send. Each note carries that exact frame and a screenshot of it, so
+            “this bit” is never ambiguous.</span>
+          </div>
+          <div class="obStep">
+            <span class="obNum">3</span>
+            <b>Fire off as many as you like</b>
+            <span>Notes reach Claude through the system log, so you don't wait for a
+            reply between them. Send a whole batch and Claude spins up an agent per
+            scene to work them in parallel.</span>
+          </div>
+        </div>
+
+        <div class="obHow">
+          <b>Billing:</b> this runs on your Claude usage limits wherever possible.
+          Only third-party tools are charged to your baz account.
+        </div>
+
+        <div id="emptyForm">
+          <input id="url" placeholder="…or paste a hosted video URL yourself" spellcheck="false" />
+          <button id="load">Load</button>
         </div>
       </div>
     </div>
@@ -611,9 +646,9 @@
       <div id="inputBar">
         <span id="ghostHint"></span>
         <span class="spacer"></span>
-        <button id="transition" class="iconBtn" title="Grab both frames at the nearest cut, and suggest a match-cut prompt">⇄</button>
-        <button id="attach" class="iconBtn" title="Attach reference image">⊕</button>
-        <button id="send" class="iconBtn primary" disabled title="Send  (⌘↵)">↑</button>
+        <button id="transition" class="iconBtn" data-tip="Match cut — grabs the frames either side of the nearest cut and suggests a prompt">⇄</button>
+        <button id="attach" class="iconBtn" data-tip="Attach a reference image — or just paste / drop one in">⊕</button>
+        <button id="send" class="iconBtn primary" disabled data-tip="Send to Claude — Enter (Shift+Enter for a new line)">↑</button>
       </div>
       <input id="filePick" type="file" accept="image/*" multiple hidden />
       <div id="dropHint">Drop reference images</div>
@@ -1251,10 +1286,6 @@ async function sendNote() {
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'failed');
 
-    // Belt and braces: the note streams to Claude Code, and lands on the
-    // clipboard so it's still usable if nothing is watching on the other end.
-    const copied = await copyText(noteBlock(data.note));
-
     $('composer').value = '';
     pendingRefs = [];
     pendingTransition = null;
@@ -1263,10 +1294,7 @@ async function sendNote() {
     drawRefs();
     syncSendEnabled();
     const n = (data.note.refImages || []).length;
-    toast(
-      (n ? `Sent with ${n} reference${n > 1 ? 's' : ''}` : 'Sent to Claude') +
-        (copied ? ' + copied' : '')
-    );
+    toast(n ? `Sent with ${n} image${n > 1 ? 's' : ''}` : 'Sent to Claude');
     loadNotes();
   } catch (err) {
     toast('Send failed: ' + err.message, true);
@@ -1307,7 +1335,7 @@ async function loadNotes() {
               .join('')}</div>`
           : ''}
       </div>
-      <button class="copyBtn" title="Copy this note for Claude">⧉</button>`;
+      <button class="copyBtn" data-tip="Copy this note as text">⧉</button>`;
     // Every image (the captured frame AND any references) expands on click.
     el.querySelectorAll('img').forEach((im) => {
       im.onclick = () => {
@@ -1338,6 +1366,17 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Tab' && $('ghost').classList.contains('on')) {
       e.preventDefault();
       acceptGhost();
+      return;
+    }
+    // Enter sends. Shift+Enter (or the URL field) still gets you a newline.
+    if (e.key === 'Enter' && !e.shiftKey && document.activeElement === $('composer')) {
+      e.preventDefault();
+      sendNote();
+      return;
+    }
+    if (e.key === 'Enter' && document.activeElement === $('url')) {
+      e.preventDefault();
+      $('load').click();
       return;
     }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendNote(); }

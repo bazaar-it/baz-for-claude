@@ -1,6 +1,6 @@
 {
   "name": "baz-for-claude",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Frame-accurate video feedback for AI coding agents. Pause a hosted video, type a note, and it lands in your agent's context with the exact frame number and a still of that frame.",
   "type": "module",
   "bin": {

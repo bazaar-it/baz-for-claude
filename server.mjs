@@ -86,9 +86,12 @@ const OUT_DIR = args.out ? path.resolve(args.out) : path.join(ROOT, String(PORT)
 const NOTES_FILE = path.join(OUT_DIR, 'notes.jsonl');
 const LOG_FILE = path.join(OUT_DIR, 'notes.log');
 const FRAMES_DIR = path.join(OUT_DIR, 'frames');
+// Reference images the user attaches to a note (pasted/dropped screenshots).
+const REFS_DIR = path.join(OUT_DIR, 'refs');
 const SESSION_FILE = path.join(OUT_DIR, 'session.json');
 
 await fsp.mkdir(FRAMES_DIR, { recursive: true });
+await fsp.mkdir(REFS_DIR, { recursive: true });
 // tail -F starts cleanly only if the log exists.
 if (!fs.existsSync(LOG_FILE)) await fsp.writeFile(LOG_FILE, '');
 
@@ -273,6 +276,9 @@ function formatNoteLine(n) {
   const under = (n.layers || []).slice(1);
   if (under.length) bits.push(`under: ${under.map((l) => `${l.name}(t${l.track})`).join(', ')}`);
   if (n.frameImage) bits.push(`shot ${n.frameImage}`);
+  if (n.refImages && n.refImages.length) {
+    bits.push(`refs (READ THESE): ${n.refImages.join(', ')}`);
+  }
   if (n.sceneMapStale) {
     bits.push(`STALE EXPORT (timeline ${n.sceneMapStale.timelineDuration.toFixed(2)}s vs video ${n.sceneMapStale.videoDuration.toFixed(2)}s)`);
   }
@@ -310,7 +316,8 @@ function send(res, code, body, headers = {}) {
   res.end(typeof body === 'string' ? body : JSON.stringify(body));
 }
 
-async function readBody(req, limit = 40 * 1024 * 1024) {
+// Generous: a note can carry a captured frame plus up to 8 reference screenshots.
+async function readBody(req, limit = 72 * 1024 * 1024) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -409,6 +416,21 @@ async function handleNote(req, res) {
     await fsp.writeFile(framePath, Buffer.from(b64, 'base64'));
   }
 
+  // Reference images pasted/dropped into the composer — "make it look like this".
+  // Saved beside the note so the agent can Read them like any other file.
+  const refPaths = [];
+  if (Array.isArray(payload.refs)) {
+    for (const [i, dataUrl] of payload.refs.slice(0, 8).entries()) {
+      if (typeof dataUrl !== 'string') continue;
+      const m = /^data:image\/(png|jpeg|webp|gif);base64,/.exec(dataUrl);
+      if (!m) continue;
+      const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
+      const p = path.join(REFS_DIR, `ref-${id}-${i + 1}.${ext}`);
+      await fsp.writeFile(p, Buffer.from(dataUrl.slice(m[0].length), 'base64'));
+      refPaths.push(p);
+    }
+  }
+
   const note = {
     id,
     at: stamp,
@@ -437,6 +459,7 @@ async function handleNote(req, res) {
       frameInScene: Math.round((time - s.start) * fps),
     })),
     frameImage: framePath,
+    refImages: refPaths,
     ...(stale
       ? { sceneMapStale: { timelineDuration: timeline, videoDuration: vidDur } }
       : {}),
@@ -477,10 +500,17 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/frame') {
       const p = path.resolve(url.searchParams.get('p') || '');
-      // Only ever serve captures from our own frames dir.
-      if (!p.startsWith(FRAMES_DIR + path.sep)) return send(res, 403, { error: 'forbidden' });
+      // Only ever serve images from our own frames/refs dirs.
+      if (!p.startsWith(FRAMES_DIR + path.sep) && !p.startsWith(REFS_DIR + path.sep)) {
+        return send(res, 403, { error: 'forbidden' });
+      }
       if (!fs.existsSync(p)) return send(res, 404, { error: 'gone' });
-      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-store' });
+      const ext = path.extname(p).slice(1).toLowerCase();
+      const type = ext === 'jpg' ? 'jpeg' : ext;
+      res.writeHead(200, {
+        'Content-Type': `image/${['png', 'jpeg', 'webp', 'gif'].includes(type) ? type : 'png'}`,
+        'Cache-Control': 'no-store',
+      });
       return fs.createReadStream(p).pipe(res);
     }
 

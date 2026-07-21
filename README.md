@@ -53,6 +53,18 @@ The UI itself stays deliberately bare — you see a timecode, nothing else. Fram
 numbers, scene ids and layer stacks are resolved server-side and ride in the
 note, because that's who needs them.
 
+## Reference images
+
+**Paste or drop screenshots straight into the note box** — the "make it look
+like *this*" case. Copy a screenshot (`⌘⌃⇧4` on macOS copies to the clipboard),
+click into the composer, and paste. Drag-and-drop and the **⊕** button work too;
+up to 8 images per note, removable before you send.
+
+They're saved next to the note and their paths travel with it, flagged
+`refs (READ THESE)`, so your agent opens them alongside the captured frame. That
+means you can do all your prompting in the review UI instead of switching to a
+chat window to attach a picture.
+
 ## Install the skill (Claude Code)
 
 The package ships a skill that teaches Claude the whole workflow — port

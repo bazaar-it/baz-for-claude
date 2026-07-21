@@ -245,6 +245,60 @@
   }
   #inputBar .spacer { flex: 1; }
 
+  /* Attached reference screenshots, shown before sending. */
+  #refStrip {
+    display: none;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin-top: 9px;
+  }
+  #refStrip.on { display: flex; }
+  .refChip { position: relative; flex-shrink: 0; }
+  .refChip img {
+    height: 54px; width: auto; max-width: 150px;
+    object-fit: cover;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: #000;
+    display: block;
+    cursor: zoom-in;
+  }
+  .refChip button {
+    position: absolute; top: -6px; right: -6px;
+    width: 18px; height: 18px; padding: 0;
+    border-radius: 50%;
+    font-size: 11px; line-height: 1;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--text); color: var(--bg);
+    border: none;
+  }
+  .refChip button:hover { background: var(--warm); }
+
+  #inputBox { position: relative; }
+  #dropHint {
+    display: none;
+    position: absolute; inset: 0;
+    align-items: center; justify-content: center;
+    background: rgba(22,107,68,.08);
+    border: 2px dashed var(--accent-ink);
+    border-radius: 15px;
+    color: var(--accent-ink);
+    font-weight: 600;
+    pointer-events: none;
+  }
+  #inputBox.dropping #dropHint { display: flex; }
+
+  /* Reference thumbs on a past note. */
+  .note .refs { display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap; }
+  .note .refs img {
+    height: 34px; width: auto; max-width: 90px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+    cursor: zoom-in;
+    align-self: auto;
+  }
+
   .iconBtn {
     width: 30px; height: 30px;
     flex-shrink: 0;
@@ -383,11 +437,15 @@
 <div id="side">
   <div class="sec" id="composerSec">
     <div id="inputBox">
-      <textarea id="composer" placeholder="What's wrong at this frame?"></textarea>
+      <textarea id="composer" placeholder="What's wrong at this frame?  (paste or drop reference screenshots)"></textarea>
+      <div id="refStrip"></div>
       <div id="inputBar">
         <span class="spacer"></span>
+        <button id="attach" class="iconBtn" title="Attach reference image">⊕</button>
         <button id="send" class="iconBtn primary" disabled title="Send  (⌘↵)">↑</button>
       </div>
+      <input id="filePick" type="file" accept="image/*" multiple hidden />
+      <div id="dropHint">Drop reference images</div>
     </div>
   </div>
 
@@ -699,6 +757,9 @@ function noteBlock(n) {
   const under = (n.layers || []).slice(1);
   if (under.length) L.push(`under: ${under.map((l) => `${l.name} (t${l.track})`).join(', ')}`);
   if (n.frameImage) L.push(`frame image: ${n.frameImage}`);
+  if (n.refImages && n.refImages.length) {
+    L.push(`reference images (READ THESE): ${n.refImages.join(', ')}`);
+  }
   if (n.sceneMapStale) {
     const s = n.sceneMapStale;
     L.push(`NOTE: stale export — scene names unreliable (timeline ${s.timelineDuration.toFixed(2)}s vs video ${s.videoDuration.toFixed(2)}s)`);
@@ -727,12 +788,113 @@ async function copyText(text) {
   }
 }
 
+// ------------------------------------------------------------- reference images
+// Screenshots of external references ("make it look like this"), attached to a
+// note so the agent can Read them alongside the captured frame.
+let pendingRefs = [];
+
+/** Normalise any dropped/pasted image to a data URL, capped so payloads stay sane. */
+function toRefDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const cap = 1800; // plenty for reading UI detail in a screenshot
+      const scale = Math.min(1, cap / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale);
+      c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      // PNG, not JPEG — references are usually screenshots, and JPEG mangles text.
+      resolve(c.toDataURL('image/png'));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('unreadable image')); };
+    img.src = url;
+  });
+}
+
+async function addRefs(files) {
+  const images = [...files].filter((f) => f && f.type && f.type.startsWith('image/'));
+  if (!images.length) return;
+  for (const f of images.slice(0, 8 - pendingRefs.length)) {
+    try {
+      pendingRefs.push(await toRefDataUrl(f));
+    } catch {
+      toast('Could not read that image', true);
+    }
+  }
+  drawRefs();
+  syncSendEnabled();
+}
+
+function drawRefs() {
+  const strip = $('refStrip');
+  strip.classList.toggle('on', pendingRefs.length > 0);
+  strip.innerHTML = '';
+  pendingRefs.forEach((src, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'refChip';
+    chip.innerHTML = `<img src="${src}" alt="reference ${i + 1}" /><button title="Remove">×</button>`;
+    chip.querySelector('img').onclick = () => { $('boxImg').src = src; $('box').classList.add('on'); };
+    chip.querySelector('button').onclick = () => {
+      pendingRefs.splice(i, 1);
+      drawRefs();
+      syncSendEnabled();
+    };
+    strip.appendChild(chip);
+  });
+}
+
+// A note is sendable with words, images, or both.
+function syncSendEnabled() {
+  $('send').disabled = !$('composer').value.trim() && pendingRefs.length === 0;
+}
+
+// Paste — the main path: ⌘⌃⇧4 screenshots land straight on the clipboard.
+$('composer').addEventListener('paste', (e) => {
+  const items = [...(e.clipboardData?.items || [])];
+  const files = items.filter((it) => it.kind === 'file').map((it) => it.getAsFile());
+  if (files.length) {
+    e.preventDefault(); // don't also paste a filename into the text
+    addRefs(files);
+  }
+});
+
+// Drag and drop onto the composer.
+const box = $('inputBox');
+['dragenter', 'dragover'].forEach((ev) =>
+  box.addEventListener(ev, (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    e.preventDefault();
+    box.classList.add('dropping');
+  })
+);
+['dragleave', 'drop'].forEach((ev) =>
+  box.addEventListener(ev, (e) => {
+    if (ev === 'dragleave' && box.contains(e.relatedTarget)) return; // moving between children
+    box.classList.remove('dropping');
+  })
+);
+box.addEventListener('drop', (e) => {
+  if (!e.dataTransfer?.files?.length) return;
+  e.preventDefault();
+  addRefs(e.dataTransfer.files);
+});
+
+$('attach').onclick = () => $('filePick').click();
+$('filePick').addEventListener('change', (e) => {
+  addRefs(e.target.files);
+  e.target.value = ''; // so picking the same file twice still fires
+});
+
 async function sendNote() {
   const text = $('composer').value.trim();
-  if (!text) return;
+  if (!text && pendingRefs.length === 0) return;
   v.pause();
   const time = v.currentTime;
   const thumb = grabFrame();
+  const refs = pendingRefs;
 
   $('flash').classList.add('on');
   setTimeout(() => $('flash').classList.remove('on'), 20);
@@ -741,7 +903,7 @@ async function sendNote() {
     const r = await fetch('/api/note', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note: text, time, thumb, videoDuration: duration }),
+      body: JSON.stringify({ note: text, time, thumb, refs, videoDuration: duration }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'failed');
@@ -751,8 +913,14 @@ async function sendNote() {
     const copied = await copyText(noteBlock(data.note));
 
     $('composer').value = '';
-    $('send').disabled = true;
-    toast(copied ? 'Sent to Claude + copied to clipboard' : 'Sent to Claude');
+    pendingRefs = [];
+    drawRefs();
+    syncSendEnabled();
+    const n = (data.note.refImages || []).length;
+    toast(
+      (n ? `Sent with ${n} reference${n > 1 ? 's' : ''}` : 'Sent to Claude') +
+        (copied ? ' + copied' : '')
+    );
     loadNotes();
   } catch (err) {
     toast('Send failed: ' + err.message, true);
@@ -760,9 +928,7 @@ async function sendNote() {
 }
 
 $('send').onclick = sendNote;
-$('composer').addEventListener('input', () => {
-  $('send').disabled = !$('composer').value.trim();
-});
+$('composer').addEventListener('input', syncSendEnabled);
 // Pause the moment you start writing — you're describing THIS frame.
 $('composer').addEventListener('focus', () => v.pause());
 
@@ -784,15 +950,20 @@ async function loadNotes() {
       <div class="body">
         <div class="tc mono">${n.timecode}</div>
         <div class="tx">${n.note.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</div>
+        ${(n.refImages || []).length
+          ? `<div class="refs">${n.refImages
+              .map((p) => `<img src="/frame?p=${encodeURIComponent(p)}" alt="reference" onerror="this.remove()" />`)
+              .join('')}</div>`
+          : ''}
       </div>
       <button class="copyBtn" title="Copy this note for Claude">⧉</button>`;
-    const thumbEl = el.querySelector('img');
-    if (thumbEl) {
-      thumbEl.onclick = () => {
-        $('boxImg').src = thumbEl.src;
+    // Every image (the captured frame AND any references) expands on click.
+    el.querySelectorAll('img').forEach((im) => {
+      im.onclick = () => {
+        $('boxImg').src = im.src;
         $('box').classList.add('on');
       };
-    }
+    });
     // Click the timecode to jump back to its frame.
     const tc = el.querySelector('.tc');
     tc.style.cursor = 'pointer';

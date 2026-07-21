@@ -54,6 +54,12 @@ Do NOT poll on a timer — the tail costs ~1MB and pushes events to you.
 - `+103f` — offset **within that scene**, what you need to edit its code
 - `under:` — other layers at that frame, in case the note is about one of them
 - `shot` — **Read this PNG.** It's exactly what the user is looking at.
+- `refs (READ THESE)` — reference screenshots the user attached to the note
+  (pasted or dropped into the composer). These are the "make it look like
+  **this**" images — an external design, a competitor's video, a mockup.
+  **Always Read every ref before acting.** The note's words usually only make
+  sense next to them ("match this spacing", "this style"), so acting on the
+  text alone will produce the wrong change.
 
 ## The work loop — batch, fix, refresh, re-check
 
@@ -122,7 +128,8 @@ npx baz-for-claude --port 7790 --replay
 
 ## Acting on a note
 
-1. `Read` the `shot` PNG — see the actual problem.
+1. `Read` the `shot` PNG — see the actual problem — plus every `refs` image the
+   note carries.
 2. Use the scene id to fetch code (`baz scenes code <id> --output f.tsx --project-id <id>`).
 3. Convert `+Nf` to the scene's local frame when editing timings.
 4. Fix the batch, export once, `POST /api/refresh`, re-check the queue —

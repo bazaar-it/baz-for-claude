@@ -275,6 +275,35 @@
   .refChip button:hover { background: var(--warm); }
 
   #inputBox { position: relative; }
+
+  /* Suggested prompt, drawn under the (transparent) textarea so it reads as
+     inline autocomplete. Same font/metrics as #composer or it won't line up. */
+  #ghost {
+    display: none;
+    position: absolute;
+    left: 13px; right: 13px; top: 12px;
+    font: inherit;
+    line-height: 1.45;
+    color: var(--dimmer);
+    white-space: pre-wrap;
+    pointer-events: none;
+    z-index: 0;
+  }
+  #ghost.on { display: block; }
+  #composer { position: relative; z-index: 1; }
+  #ghostHint {
+    font-size: 10.5px;
+    color: var(--dimmer);
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity .12s;
+  }
+  #ghostHint.on { opacity: 1; }
+  #ghostHint kbd {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 5px; font-size: 10px;
+    font-family: var(--mono);
+  }
   #dropHint {
     display: none;
     position: absolute; inset: 0;
@@ -438,9 +467,12 @@
   <div class="sec" id="composerSec">
     <div id="inputBox">
       <textarea id="composer" placeholder="What's wrong at this frame?  (paste or drop reference screenshots)"></textarea>
+      <div id="ghost"></div>
       <div id="refStrip"></div>
       <div id="inputBar">
+        <span id="ghostHint"></span>
         <span class="spacer"></span>
+        <button id="transition" class="iconBtn" title="Grab both frames at the nearest cut, and suggest a match-cut prompt">⇄</button>
         <button id="attach" class="iconBtn" title="Attach reference image">⊕</button>
         <button id="send" class="iconBtn primary" disabled title="Send  (⌘↵)">↑</button>
       </div>
@@ -757,8 +789,19 @@ function noteBlock(n) {
   const under = (n.layers || []).slice(1);
   if (under.length) L.push(`under: ${under.map((l) => `${l.name} (t${l.track})`).join(', ')}`);
   if (n.frameImage) L.push(`frame image: ${n.frameImage}`);
+  if (n.transition) {
+    const t = n.transition;
+    L.push(
+      `MATCH CUT at ${t.atSec.toFixed(2)}s: "${t.fromScene.name}" (${t.fromScene.id}) last frame f${t.fromScene.lastFrame}` +
+      ` -> "${t.toScene.name}" (${t.toScene.id}) first frame f${t.toScene.firstFrame}`
+    );
+  }
   if (n.refImages && n.refImages.length) {
-    L.push(`reference images (READ THESE): ${n.refImages.join(', ')}`);
+    L.push(
+      (n.transition
+        ? 'cut frames (READ BOTH — outgoing then incoming): '
+        : 'reference images (READ THESE): ') + n.refImages.join(', ')
+    );
   }
   if (n.sceneMapStale) {
     const s = n.sceneMapStale;
@@ -888,6 +931,164 @@ $('filePick').addEventListener('change', (e) => {
   e.target.value = ''; // so picking the same file twice still fires
 });
 
+// ------------------------------------------------------------- match cuts
+// The two frames either side of a cut are what you actually need to reason
+// about a match cut, and they're fiddly to grab by hand — this does both.
+let pendingTransition = null;
+let suggestions = [];
+let suggestionIdx = 0;
+
+/** Cuts on the spine track — the same boundaries the timeline ticks mark. */
+function spineScenes() {
+  if (!S.scenes.length) return [];
+  const counts = {};
+  S.scenes.forEach((s) => (counts[s.track] = (counts[s.track] || 0) + 1));
+  const spine = Object.keys(counts).sort(
+    (a, b) => counts[b] - counts[a] || Number(a) - Number(b)
+  )[0];
+  return S.scenes
+    .filter((s) => String(s.track) === String(spine))
+    .sort((a, b) => a.start - b.start);
+}
+
+function nearestCut(t) {
+  const spine = spineScenes();
+  if (spine.length < 2) return null;
+  let best = null;
+  for (let i = 1; i < spine.length; i++) {
+    const d = Math.abs(spine[i].start - t);
+    if (!best || d < best.dist) best = { dist: d, at: spine[i].start, from: spine[i - 1], to: spine[i] };
+  }
+  return best;
+}
+
+/**
+ * Seek to `t` and grab that frame. Resolves even if no seek is needed.
+ *
+ * Deliberately timer-based, never requestAnimationFrame: rAF is throttled to
+ * zero whenever the tab isn't painting (backgrounded, occluded), which would
+ * hang this forever. 'seeked' already means the frame is decoded, so a short
+ * timer is enough to let it land.
+ */
+function captureAt(t) {
+  return new Promise((resolve) => {
+    let done = false;
+    const grab = () => {
+      if (done) return;
+      done = true;
+      v.removeEventListener('seeked', onSeeked);
+      try {
+        if (!v.videoWidth) return resolve(null);
+        const scale = Math.min(1, 1400 / Math.max(v.videoWidth, v.videoHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.round(v.videoWidth * scale);
+        c.height = Math.round(v.videoHeight * scale);
+        c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/png'));
+      } catch {
+        resolve(null);
+      }
+    };
+    const onSeeked = () => setTimeout(grab, 40);
+    v.addEventListener('seeked', onSeeked);
+    v.currentTime = t;
+    // A seek to where we already are may never fire 'seeked' at all.
+    setTimeout(grab, 1200);
+  });
+}
+
+function buildSuggestions(A, B) {
+  return [
+    { kind: 'Motion', text:
+      `Motion match cut from "${A}" into "${B}": carry the dominant movement straight through the cut — have "${A}" exit on the same direction, speed and screen position that "${B}" enters on, so the eye tracks through the edit instead of re-anchoring. Keep the velocity continuous across the splice; don't ease out and then ease back in.` },
+    { kind: 'Colour', text:
+      `Colour match cut from "${A}" into "${B}": match the dominant colour and luminance either side of the cut — push the last frame of "${A}" toward the opening palette of "${B}" so both frames sit at the same value and hue at the splice, and the transition reads as one continuous field rather than two shots.` },
+    { kind: 'Shape', text:
+      `Shape match cut from "${A}" into "${B}": align the dominant shape across the cut — place the key element at the same scale, rotation and screen position in the last frame of "${A}" and the first frame of "${B}", so it appears to morph through the edit rather than cut.` },
+  ];
+}
+
+const COMPOSER_PLACEHOLDER = $('composer').placeholder;
+
+function showGhost() {
+  const s = suggestions[suggestionIdx];
+  if (!s || $('composer').value.trim()) return hideGhost();
+  $('ghost').textContent = s.text;
+  $('ghost').classList.add('on');
+  // The textarea is empty, so its placeholder would render straight through
+  // the suggestion. Suppress it while the ghost is up.
+  $('composer').placeholder = '';
+  $('ghostHint').innerHTML = `${s.kind} match cut · <kbd>Tab</kbd> to use · <kbd>⇄</kbd> next`;
+  $('ghostHint').classList.add('on');
+}
+function hideGhost() {
+  $('ghost').classList.remove('on');
+  $('ghostHint').classList.remove('on');
+  $('composer').placeholder = COMPOSER_PLACEHOLDER;
+}
+function acceptGhost() {
+  const s = suggestions[suggestionIdx];
+  if (!s) return false;
+  $('composer').value = s.text;
+  hideGhost();
+  syncSendEnabled();
+  $('composer').focus();
+  return true;
+}
+
+async function grabTransition(btn) {
+  if (!S.scenes.length) {
+    return toast('No scene map — relaunch with --project to use match cuts', true);
+  }
+  const cut = nearestCut(v.currentTime);
+  if (!cut) return toast('No cut found in this video', true);
+
+  // Same cut already loaded → just cycle to the next suggestion.
+  if (pendingTransition && pendingTransition.atSec === cut.at) {
+    suggestionIdx = (suggestionIdx + 1) % suggestions.length;
+    showGhost();
+    return;
+  }
+
+  const fps = S.fps || 30;
+  const inFrame = Math.round(cut.at * fps);
+  const outFrame = inFrame - 1;
+  const restore = v.currentTime;
+  const wasPlaying = !v.paused;
+  v.pause();
+  btn.disabled = true;
+
+  try {
+    // Nudge past each frame boundary so the decoder lands on the frame we mean.
+    const outImg = await captureAt(Math.max(0, outFrame / fps + 1e-4));
+    const inImg = await captureAt(inFrame / fps + 1e-4);
+    if (!outImg || !inImg) throw new Error('could not capture frames');
+
+    // Order matters: outgoing first, incoming second — the note says so.
+    pendingRefs = [outImg, inImg];
+    drawRefs();
+    pendingTransition = {
+      atSec: cut.at,
+      fromScene: { id: cut.from.id, name: cut.from.name, lastFrame: outFrame },
+      toScene: { id: cut.to.id, name: cut.to.name, firstFrame: inFrame },
+    };
+    suggestions = buildSuggestions(cut.from.name, cut.to.name);
+    suggestionIdx = 0;
+    showGhost();
+    syncSendEnabled();
+    $('composer').focus();
+    toast(`Cut: ${cut.from.name} → ${cut.to.name}`);
+  } catch (err) {
+    toast('Transition grab failed: ' + err.message, true);
+  } finally {
+    v.currentTime = restore;
+    if (wasPlaying) v.play();
+    btn.disabled = false;
+  }
+}
+
+$('transition').onclick = () => grabTransition($('transition'));
+
 async function sendNote() {
   const text = $('composer').value.trim();
   if (!text && pendingRefs.length === 0) return;
@@ -903,7 +1104,7 @@ async function sendNote() {
     const r = await fetch('/api/note', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ note: text, time, thumb, refs, videoDuration: duration }),
+      body: JSON.stringify({ note: text, time, thumb, refs, transition: pendingTransition, videoDuration: duration }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || 'failed');
@@ -914,6 +1115,9 @@ async function sendNote() {
 
     $('composer').value = '';
     pendingRefs = [];
+    pendingTransition = null;
+    suggestions = [];
+    hideGhost();
     drawRefs();
     syncSendEnabled();
     const n = (data.note.refImages || []).length;
@@ -928,7 +1132,12 @@ async function sendNote() {
 }
 
 $('send').onclick = sendNote;
-$('composer').addEventListener('input', syncSendEnabled);
+$('composer').addEventListener('input', () => {
+  syncSendEnabled();
+  // Typing over a suggestion dismisses it; clearing the box brings it back.
+  if ($('composer').value.trim()) hideGhost();
+  else if (suggestions.length) showGhost();
+});
 // Pause the moment you start writing — you're describing THIS frame.
 $('composer').addEventListener('focus', () => v.pause());
 
@@ -983,8 +1192,14 @@ document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
 
   if (typing) {
+    // Tab accepts the greyed-out suggestion instead of moving focus.
+    if (e.key === 'Tab' && $('ghost').classList.contains('on')) {
+      e.preventDefault();
+      acceptGhost();
+      return;
+    }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendNote(); }
-    if (e.key === 'Escape') document.activeElement.blur();
+    if (e.key === 'Escape') { hideGhost(); document.activeElement.blur(); }
     return;
   }
 

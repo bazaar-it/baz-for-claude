@@ -65,6 +65,21 @@ They're saved next to the note and their paths travel with it, flagged
 means you can do all your prompting in the review UI instead of switching to a
 chat window to attach a picture.
 
+## Match cuts (⇄)
+
+Park the playhead near a cut and hit **⇄**. It finds the nearest scene
+boundary, grabs the **last frame of the outgoing scene and the first frame of
+the incoming one**, attaches both, and offers a starting prompt in grey —
+press <kbd>Tab</kbd> to accept it, or **⇄** again to cycle:
+
+- **Motion** — carry the movement vector through the cut
+- **Colour** — match luminance and palette across the splice
+- **Shape** — align the key element's scale and screen position so it morphs
+
+The suggestions name the actual scenes, and the note tells your agent which
+frame is which, so it edits the tail of one scene and the head of the next to
+agree. Needs `--project` (that's where the scene boundaries come from).
+
 ## Install the skill (Claude Code)
 
 The package ships a skill that teaches Claude the whole workflow — port

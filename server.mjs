@@ -276,8 +276,20 @@ function formatNoteLine(n) {
   const under = (n.layers || []).slice(1);
   if (under.length) bits.push(`under: ${under.map((l) => `${l.name}(t${l.track})`).join(', ')}`);
   if (n.frameImage) bits.push(`shot ${n.frameImage}`);
+  if (n.transition) {
+    const t = n.transition;
+    bits.push(
+      `MATCH CUT at ${t.atSec.toFixed(2)}s — "${t.fromScene.name}" ${String(t.fromScene.id).slice(0, 8)} ` +
+      `last frame f${t.fromScene.lastFrame} -> "${t.toScene.name}" ${String(t.toScene.id).slice(0, 8)} ` +
+      `first frame f${t.toScene.firstFrame}`
+    );
+  }
   if (n.refImages && n.refImages.length) {
-    bits.push(`refs (READ THESE): ${n.refImages.join(', ')}`);
+    bits.push(
+      n.transition
+        ? `frames (READ BOTH — outgoing then incoming): ${n.refImages.join(', ')}`
+        : `refs (READ THESE): ${n.refImages.join(', ')}`
+    );
   }
   if (n.sceneMapStale) {
     bits.push(`STALE EXPORT (timeline ${n.sceneMapStale.timelineDuration.toFixed(2)}s vs video ${n.sceneMapStale.videoDuration.toFixed(2)}s)`);
@@ -460,6 +472,11 @@ async function handleNote(req, res) {
     })),
     frameImage: framePath,
     refImages: refPaths,
+    // Set when the note came from the ⇄ match-cut grab: the two refs above are
+    // the last frame of `from` and the first frame of `to`, in that order.
+    transition: payload.transition && typeof payload.transition === 'object'
+      ? payload.transition
+      : null,
     ...(stale
       ? { sceneMapStale: { timelineDuration: timeline, videoDuration: vidDur } }
       : {}),

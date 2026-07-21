@@ -54,6 +54,13 @@ Do NOT poll on a timer — the tail costs ~1MB and pushes events to you.
 - `+103f` — offset **within that scene**, what you need to edit its code
 - `under:` — other layers at that frame, in case the note is about one of them
 - `shot` — **Read this PNG.** It's exactly what the user is looking at.
+- `MATCH CUT at …` — the note came from the ⇄ button at a scene boundary. The
+  two images under `frames (READ BOTH …)` are, **in order**, the *last* frame of
+  the outgoing scene and the *first* frame of the incoming scene. Read both
+  together and compare them — the request is about the relationship between
+  those two frames (shared motion vector, colour/luminance, or shape and screen
+  position), so edit the **tail of the outgoing scene and the head of the
+  incoming one** to agree. Both scene ids are in the line.
 - `refs (READ THESE)` — reference screenshots the user attached to the note
   (pasted or dropped into the composer). These are the "make it look like
   **this**" images — an external design, a competitor's video, a mockup.

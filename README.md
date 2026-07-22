@@ -139,8 +139,8 @@ Drag the playhead to scrub; click a note's timecode to jump back to that frame.
 
 ## Running several reviews at once
 
-State is isolated **per port** (`<tmp>/baz-for-claude/<port>/`), so parallel agent
-sessions can each review a different video with no cross-talk:
+Each session gets its own port, so parallel agents can review different videos
+with no cross-talk:
 
 ```bash
 npx baz-for-claude --port 7788 --url "…/render-a.mp4"   # session A
@@ -205,14 +205,24 @@ skip even those.
 
 ## State
 
-`<tmp>/baz-for-claude/<port>/`
+Notes belong to the **video**, not the window. Reusing a port for a different
+project starts clean, and reopening a project brings its own history back —
+including across a re-export, since a baz render URL carries its project id.
+
+`<tmp>/baz-for-claude/projects/<project>/` — per video:
 
 | File | Role |
 |------|------|
 | `notes.jsonl` | Data of record — one JSON object per note |
-| `notes.log` | Same notes preformatted for `tail -F` delivery |
 | `frames/` | Captured frame PNGs |
-| `session.json` | URL + project id + scene map, survives restarts |
+| `refs/` | Attached reference images |
+
+`<tmp>/baz-for-claude/<port>/` — per window:
+
+| File | Role |
+|------|------|
+| `notes.log` | Notes preformatted for `tail -F` delivery. Per port so the path your agent watches never moves, whichever project you open. |
+| `session.json` | Which video this window is showing |
 
 ## Requirements
 

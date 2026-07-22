@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Readable, pipeline } from 'node:stream';
+import crypto from 'node:crypto';
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -77,40 +78,65 @@ const FPS = args.fps || 30;
 const PORT = args.port || 7788;
 
 /**
- * State is isolated PER PORT so parallel Claude sessions never share a notes
- * file or clobber each other's session.json. One session = one port = one
- * state dir = one watcher. An explicit --out overrides everything.
+ * State splits two ways, because the two halves have different owners:
+ *
+ *   per PORT     notes.log, session.json — the delivery channel and "what is
+ *                this window showing". The log path must stay put or the
+ *                agent's `tail -F` breaks mid-session.
+ *   per PROJECT  notes.jsonl, frames/, refs/ — the feedback itself. Notes
+ *                belong to a video, not to a port number, so reusing a port
+ *                for a different project must NOT drag the old notes along,
+ *                and reopening a project brings its own history back.
+ *
+ * An explicit --out collapses both into one directory.
  */
 const ROOT = path.join(os.tmpdir(), 'baz-for-claude');
+const PROJECTS_ROOT = path.join(ROOT, 'projects');
 const OUT_DIR = args.out ? path.resolve(args.out) : path.join(ROOT, String(PORT));
-const NOTES_FILE = path.join(OUT_DIR, 'notes.jsonl');
 const LOG_FILE = path.join(OUT_DIR, 'notes.log');
-const FRAMES_DIR = path.join(OUT_DIR, 'frames');
-// Reference images the user attaches to a note (pasted/dropped screenshots).
-const REFS_DIR = path.join(OUT_DIR, 'refs');
 const SESSION_FILE = path.join(OUT_DIR, 'session.json');
 
-await fsp.mkdir(FRAMES_DIR, { recursive: true });
-await fsp.mkdir(REFS_DIR, { recursive: true });
+await fsp.mkdir(OUT_DIR, { recursive: true });
 // tail -F starts cleanly only if the log exists.
 if (!fs.existsSync(LOG_FILE)) await fsp.writeFile(LOG_FILE, '');
 
-// --replay: re-emit every past note so a FRESH agent session can catch up on
-// feedback it was never notified about. Prints and exits — no server.
-if (args.replay) {
-  const txt = await fsp.readFile(NOTES_FILE, 'utf8').catch(() => '');
-  let n = 0;
-  for (const line of txt.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      console.log(formatNoteLine(JSON.parse(line)));
-      n++;
-    } catch {
-      /* skip a torn line */
-    }
+/**
+ * Which video's notes are these? Prefer the baz project id. Failing that, baz
+ * render URLs embed the project id, so a re-export (new URL, same project)
+ * still lands on the same history. Anything else falls back to the URL itself.
+ */
+function projectKey(project, url) {
+  if (project) return 'p-' + String(project).trim();
+  if (url) {
+    const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.exec(url);
+    if (uuid) return 'p-' + uuid[0].toLowerCase();
+    return 'u-' + crypto.createHash('sha1').update(url).digest('hex').slice(0, 12);
   }
-  if (!n) console.log(`(no notes yet for port ${PORT} — ${NOTES_FILE})`);
-  process.exit(0);
+  return null; // nothing loaded yet
+}
+
+// Rebound by useProject() whenever the loaded video changes.
+let CURRENT_KEY = null;
+let PROJ_DIR = OUT_DIR;
+let NOTES_FILE = path.join(OUT_DIR, 'notes.jsonl');
+let FRAMES_DIR = path.join(OUT_DIR, 'frames');
+let REFS_DIR = path.join(OUT_DIR, 'refs');
+
+async function useProject(key) {
+  if (args.out) { // --out pins everything to one directory
+    await fsp.mkdir(FRAMES_DIR, { recursive: true });
+    await fsp.mkdir(REFS_DIR, { recursive: true });
+    return;
+  }
+  const next = key || '_unassigned';
+  if (next === CURRENT_KEY) return;
+  CURRENT_KEY = next;
+  PROJ_DIR = path.join(PROJECTS_ROOT, next.replace(/[^\w.-]/g, '_'));
+  NOTES_FILE = path.join(PROJ_DIR, 'notes.jsonl');
+  FRAMES_DIR = path.join(PROJ_DIR, 'frames');
+  REFS_DIR = path.join(PROJ_DIR, 'refs');
+  await fsp.mkdir(FRAMES_DIR, { recursive: true });
+  await fsp.mkdir(REFS_DIR, { recursive: true });
 }
 
 // ---------------------------------------------------------------- session state
@@ -128,8 +154,43 @@ try {
   /* first run */
 }
 
+// An explicit --url with no --project means "show me THIS video". If the
+// resumed session names a different project than the URL does, that project is
+// left over from whatever last used this port — drop it, or we'd key the notes
+// (and the scene names) to the wrong video.
+if (args.url && !args.project && session.project) {
+  const inUrl = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.exec(args.url);
+  if (!inUrl || inUrl[0].toLowerCase() !== session.project.toLowerCase()) {
+    session.project = '';
+    session.scenes = [];
+  }
+}
+
+// Point at the right project's history before anything reads or writes notes.
+await useProject(projectKey(session.project, session.url));
+
 async function saveSession() {
   await fsp.writeFile(SESSION_FILE, JSON.stringify(session, null, 2));
+}
+
+// --replay: re-emit every past note so a FRESH agent session can catch up on
+// feedback it was never notified about. Prints and exits — no server.
+// Resolves the same project the session points at, so it replays that video's
+// notes rather than whatever last used this port.
+if (args.replay) {
+  const txt = await fsp.readFile(NOTES_FILE, 'utf8').catch(() => '');
+  let n = 0;
+  for (const line of txt.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      console.log(formatNoteLine(JSON.parse(line)));
+      n++;
+    } catch {
+      /* skip a torn line */
+    }
+  }
+  if (!n) console.log(`(no notes yet for ${CURRENT_KEY || 'this project'} — ${NOTES_FILE})`);
+  process.exit(0);
 }
 
 /** Run a baz command and parse its JSON, tolerating a leading ASCII banner. */
@@ -204,6 +265,8 @@ async function syncLatest({ alsoScenes = false } = {}) {
       session.url = latest.url;
       // The scene map likely changed with the render that produced this URL.
       if (!scenes) session.scenes = await loadScenes(session.project);
+      // Same project, new export — key is unchanged, but stay in step anyway.
+      await useProject(projectKey(session.project, session.url));
       console.log(`  synced     newer export ${latest.id} (${latest.createdAt})`);
     }
     await saveSession();
@@ -517,10 +580,12 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/frame') {
       const p = path.resolve(url.searchParams.get('p') || '');
-      // Only ever serve images from our own frames/refs dirs.
-      if (!p.startsWith(FRAMES_DIR + path.sep) && !p.startsWith(REFS_DIR + path.sep)) {
-        return send(res, 403, { error: 'forbidden' });
-      }
+      // Only ever serve images we wrote — any project's frames/refs, since the
+      // history a note points at may predate the current project switch.
+      const allowed =
+        (p.startsWith(PROJECTS_ROOT + path.sep) || p.startsWith(OUT_DIR + path.sep)) &&
+        (p.includes(`${path.sep}frames${path.sep}`) || p.includes(`${path.sep}refs${path.sep}`));
+      if (!allowed) return send(res, 403, { error: 'forbidden' });
       if (!fs.existsSync(p)) return send(res, 404, { error: 'gone' });
       const ext = path.extname(p).slice(1).toLowerCase();
       const type = ext === 'jpg' ? 'jpeg' : ext;
@@ -544,6 +609,8 @@ const server = http.createServer(async (req, res) => {
         session.scenes = await loadScenes(session.project);
         console.log(`  loaded ${session.scenes.length} scenes for ${session.project.slice(0, 8)}`);
       }
+      // Loading a different video swaps in that video's note history.
+      await useProject(projectKey(session.project, session.url));
       await saveSession();
       return send(res, 200, { ...session, thumbs: args.thumbs });
     }
@@ -612,7 +679,7 @@ server.listen(PORT, '127.0.0.1', async () => {
   }
 
   console.log(`\n  baz-for-claude   ${addr}`);
-  console.log(`  state      ${OUT_DIR}`);
+  console.log(`  notes      ${PROJ_DIR}${CURRENT_KEY === '_unassigned' ? '  (no video loaded yet)' : ''}`);
   console.log(`  watch      tail -n 0 -F ${LOG_FILE}`);
   if (session.url) console.log(`  video      ${session.url.slice(0, 78)}`);
   if (session.scenes.length) console.log(`  scenes     ${session.scenes.length} loaded`);

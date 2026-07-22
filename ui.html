@@ -900,7 +900,7 @@ async function saveSession(url, project) {
  * Visible tabs only, and never mid-note: swapping the video while you're
  * describing a frame would pull the subject out from under you.
  */
-setInterval(async () => {
+async function syncFromServer() {
   if (document.visibilityState !== 'visible') return;
   if ($('composer').value.trim()) return;
   try {
@@ -914,7 +914,14 @@ setInterval(async () => {
   } catch {
     /* server restarting — try again next tick */
   }
-}, 5000);
+}
+setInterval(syncFromServer, 5000);
+// Background tabs skip the poll above AND browsers throttle setInterval in
+// them, so a tab that was hidden when the export changed can sit on a stale
+// render — you'd review frames that no longer exist. Catch up the moment the
+// tab is looked at again.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncFromServer(); });
+window.addEventListener('focus', syncFromServer);
 
 function attach(url) {
   // Proxied so the <video> is same-origin — that's what makes canvas frame

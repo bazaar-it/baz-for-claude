@@ -16,10 +16,15 @@ travel in the note. Don't ask the user for any of it; it's already in your hands
 
 ## Start a session
 
-Pick a port that isn't in use. **One review session = one port** — state is
-isolated per port, so parallel sessions never cross-post notes into each
-other's chats. A collision exits with code 2 rather than silently binding
-elsewhere (that would send the user's notes to the wrong session).
+Pick a port that isn't in use. **One review session = one port**, so parallel
+sessions never cross-post notes into each other's chats. A collision exits with
+code 2 rather than silently binding elsewhere (that would send the user's notes
+to the wrong session).
+
+Note history belongs to the **video**, not the port: opening a different project
+on a port you've used before starts clean, and reopening a project restores its
+own notes. The `tail` path stays per-port, so the watcher you arm keeps working
+whichever project gets loaded.
 
 ```bash
 npx baz-for-claude --port 7790 --project <baz-project-id> --no-open
@@ -152,6 +157,9 @@ user says "check my video notes":
 ```bash
 npx baz-for-claude --port 7790 --replay
 ```
+
+That replays the notes for whichever project that port is currently showing.
+Pass `--project <id>` to replay a specific one.
 
 ## Acting on a note
 

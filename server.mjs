@@ -105,13 +105,24 @@ if (!fs.existsSync(LOG_FILE)) await fsp.writeFile(LOG_FILE, '');
  * render URLs embed the project id, so a re-export (new URL, same project)
  * still lands on the same history. Anything else falls back to the URL itself.
  */
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+/**
+ * The baz project id this note belongs to — the id the agent must pin with
+ * `--project-id` so a concurrent `baz project use` in another session can't
+ * redirect the edit to the wrong project. Prefer the explicit project; else
+ * the UUID a baz render URL embeds; else null (not a baz project).
+ */
+function projectIdFor(project, url) {
+  if (project) return String(project).trim();
+  const m = url ? UUID_RE.exec(url) : null;
+  return m ? m[0].toLowerCase() : null;
+}
+
 function projectKey(project, url) {
-  if (project) return 'p-' + String(project).trim();
-  if (url) {
-    const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i.exec(url);
-    if (uuid) return 'p-' + uuid[0].toLowerCase();
-    return 'u-' + crypto.createHash('sha1').update(url).digest('hex').slice(0, 12);
-  }
+  const id = projectIdFor(project, url);
+  if (id) return 'p-' + id;
+  if (url) return 'u-' + crypto.createHash('sha1').update(url).digest('hex').slice(0, 12);
   return null; // nothing loaded yet
 }
 
@@ -334,7 +345,8 @@ async function loadScenes(projectId) {
 /** One human/Claude-readable line per note — the `tail -F` delivery format. */
 function formatNoteLine(n) {
   const bits = [`f${n.frame}`, n.timecode];
-  if (n.project) bits.push(`proj ${String(n.project).slice(0, 8)}`);
+  // Full id, not truncated: the agent copies this straight into --project-id.
+  if (n.project) bits.push(`project ${n.project} (pin: --project-id ${n.project})`);
   if (n.scene) bits.push(`scene "${n.scene.name}" ${String(n.scene.id).slice(0, 8)} +${n.scene.frameInScene}f`);
   const under = (n.layers || []).slice(1);
   if (under.length) bits.push(`under: ${under.map((l) => `${l.name}(t${l.track})`).join(', ')}`);
@@ -514,7 +526,9 @@ async function handleNote(req, res) {
     frame,
     timecode: timecode(time),
     fps,
-    project: session.project || null,
+    // Full baz project id (from --project or the render URL) — the id the agent
+    // must pin on every baz command so the edit can't leak to another project.
+    project: projectIdFor(session.project, session.url),
     video: session.url || null,
     scene: scene
       ? {

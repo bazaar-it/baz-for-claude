@@ -68,7 +68,7 @@ tail -n 0 -F <tmp>/baz-for-claude/<port>/notes.log
 Do NOT poll on a timer — the tail costs ~1MB and pushes events to you.
 
 ```
-[NOTE] f510 | 00:17.00 | proj a1b2c3d4 | scene "sc04-card" 3f8b4993 +103f
+[NOTE] f510 | 00:17.00 | project 4d649aa5-4db1-4436-91bf-968efbd86e6a (pin: --project-id 4d649aa5-4db1-4436-91bf-968efbd86e6a) | scene "sc04-card" 3f8b4993 +103f
        | under: sc05-typing(t0), sc00-audio(t1)
        | shot …/frames/f00510-abc.png
        | STALE EXPORT (timeline 50.80s vs video 48.92s)
@@ -76,6 +76,13 @@ Do NOT poll on a timer — the tail costs ~1MB and pushes events to you.
 ```
 
 - `f510` — absolute frame
+- `project <id>` — **the baz project this note belongs to. Pin `--project-id <id>`
+  with this exact id on EVERY baz command you run for this note** (`scenes
+  create`, `set-code`, `delete`, `move`, `export`, …). Do not rely on the active
+  project — `baz project use` writes a shared pointer that a concurrent session
+  can flip, which silently lands your edit on the wrong project. The note hands
+  you the right id precisely so that can't happen; the `(pin: …)` hint is
+  copy-pasteable. Every note in a batch carries the same project id — use it.
 - `+103f` — offset **within that scene**, what you need to edit its code
 - `under:` — other layers at that frame, in case the note is about one of them
 - `shot` — **Read this PNG.** It's exactly what the user is looking at.
@@ -112,11 +119,12 @@ already sent. The loop is:
    - **One subagent per scene, never per note.** Two notes on the same scene go
      to the *same* subagent — two agents editing one scene's code clobber each
      other.
-   - **Every baz command pins `--project-id <id>`.** Concurrent sessions flip
-     the active-project pointer, so an unpinned command can edit the wrong
-     project. Each subagent uses `baz scenes code <scene-id> --project-id <id>`
-     to read and `baz scenes set-code <scene-id> --file f.tsx --project-id <id>`
-     to write (scene id is positional), always pinned.
+   - **Every baz command pins `--project-id <id>` — the id is in the note.**
+     Use the `project <id>` from the notes you're working (they all share it);
+     never rely on the active project, which a concurrent session can flip mid-
+     edit. Each subagent uses `baz scenes code <scene-id> --project-id <id>` to
+     read and `baz scenes set-code <scene-id> --file f.tsx --project-id <id>` to
+     write (scene id is positional), always pinned to the note's project id.
    - **Keep structural changes serial and in the main agent** — reordering,
      retiming that shifts neighbors, or add/delete that renumbers scenes touches
      shared project state and must not run alongside per-scene edits. Do the

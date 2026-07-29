@@ -33,11 +33,23 @@ interface ProjectSnapshot {
   scenes: SceneInfo[];
 }
 
-interface Selection {
+interface Picked {
   loc: string; // "sceneId:line:col"
   sceneId: string;
   el: HTMLElement;
   tagName: string;
+}
+
+/**
+ * Selection is a CHAIN, not a single element: the tagged ancestors of the hit
+ * element, deepest first. The JSX tree is the grouping model — selecting a
+ * parent and dragging moves its whole subtree (the "group"); selecting a
+ * child moves it independently. Click the same spot again to widen selection
+ * one level; the breadcrumb in the bar jumps to any level directly.
+ */
+interface Selection {
+  chain: Picked[];
+  index: number;
 }
 
 /**
@@ -78,10 +90,14 @@ function App() {
 
   const stageRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<PlayerRef>(null);
+  const selectionRef = useRef<Selection | null>(null);
+  useEffect(() => { selectionRef.current = selection; }, [selection]);
   const lastFrameRef = useRef(0);
   const wasPlayingRef = useRef(false);
   const dragRef = useRef<{
-    sel: Selection;
+    sel: Picked;
+    scale: number;
+    samePlace: boolean;
     startX: number;
     startY: number;
     origTransform: string;
@@ -165,6 +181,8 @@ function App() {
     const f = Math.min(lastFrameRef.current, totalFrames - 1);
     p.seekTo(f);
     if (wasPlayingRef.current) p.play();
+    // The DOM was rebuilt — any selected element reference is dead.
+    setSelection(null);
   }, [compiled, totalFrames]);
 
   // ---- transport ------------------------------------------------------------
@@ -196,22 +214,31 @@ function App() {
   );
 
   // ---- canvas hit-testing + drag -------------------------------------------
-  const pickAt = useCallback((x: number, y: number): Selection | null => {
+  const pickAt = useCallback((x: number, y: number): Picked[] => {
     // elementsFromPoint (plural): full-track overlays (the audio scene's
     // AbsoluteFill spans the whole video, above track 0) would swallow every
-    // hit if we only looked at the topmost element. Walk the whole stack and
-    // take the first element that is, or sits inside, a tagged one.
+    // hit if we only looked at the topmost element. Walk the whole stack to
+    // the first tagged element, then collect its ENTIRE tagged ancestor chain
+    // — that chain is the group hierarchy straight from the JSX source.
     const stack = document.elementsFromPoint(x, y) as HTMLElement[];
     for (const raw of stack) {
       if (raw.closest('.hit-overlay')) continue; // ourselves
       let el: HTMLElement | null = raw;
       while (el && el !== stageRef.current) {
-        const loc = el.getAttribute('data-baz');
-        if (loc) return { loc, sceneId: loc.split(':')[0], el, tagName: el.tagName.toLowerCase() };
+        if (el.getAttribute('data-baz')) {
+          const chain: Picked[] = [];
+          let cur: HTMLElement | null = el;
+          while (cur && cur !== stageRef.current) {
+            const loc = cur.getAttribute('data-baz');
+            if (loc) chain.push({ loc, sceneId: loc.split(':')[0], el: cur, tagName: cur.tagName.toLowerCase() });
+            cur = cur.parentElement;
+          }
+          return chain;
+        }
         el = el.parentElement;
       }
     }
-    return null;
+    return [];
   }, []);
 
   const compositionScale = useCallback((): number => {
@@ -222,27 +249,51 @@ function App() {
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      const sel = pickAt(e.clientX, e.clientY);
-      setSelection(sel);
-      if (!sel) return;
+      const chain = pickAt(e.clientX, e.clientY);
+      if (!chain.length) {
+        setSelection(null);
+        return;
+      }
+      // Figma-style: pressing on the already-selected spot KEEPS the current
+      // level as the drag target (drag moves what's highlighted); widening
+      // happens on pointerUP without movement. A setState updater can't drive
+      // this — it runs at render time, after we've already chosen the drag
+      // target — hence the ref mirror.
+      const prev = selectionRef.current;
+      const samePlace = prev && prev.chain[0]?.loc === chain[0].loc;
+      const index = samePlace ? Math.min(prev.index, chain.length - 1) : 0;
+      setSelection({ chain, index });
+      const target = chain[index];
+
       playerRef.current?.pause(); // editing happens on a still frame
+      // Screen px ≠ element px: the composition is scaled by the player, and
+      // scenes often add their own scale() wrappers. Measuring rendered width
+      // vs layout width folds ALL ancestor scaling into one factor — this is
+      // what makes the element land exactly where you drop it.
+      const rect = target.el.getBoundingClientRect();
+      const layoutW = (target.el as HTMLElement).offsetWidth;
+      const scale = layoutW > 0 && rect.width > 0 ? rect.width / layoutW : compositionScale();
       dragRef.current = {
-        sel,
+        sel: target,
+        scale,
+        samePlace: !!samePlace,
         startX: e.clientX,
         startY: e.clientY,
-        origTransform: sel.el.style.transform || '',
+        origTransform: target.el.style.transform || '',
         moved: false,
       };
       try { (e.target as HTMLElement).setPointerCapture(e.pointerId); } catch { /* synthetic */ }
     },
-    [pickAt]
+    [pickAt, compositionScale]
   );
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     const d = dragRef.current;
     if (!d) return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
+    // Live preview in the element's LOCAL px (same space the patch uses), so
+    // the element tracks the cursor exactly and stays put after the save.
+    const dx = (e.clientX - d.startX) / d.scale;
+    const dy = (e.clientY - d.startY) / d.scale;
     if (Math.abs(dx) + Math.abs(dy) > 2) d.moved = true;
     d.sel.el.style.transform = `translate(${dx}px, ${dy}px) ${d.origTransform}`.trim();
   }, []);
@@ -251,11 +302,19 @@ function App() {
     async (e: React.PointerEvent) => {
       const d = dragRef.current;
       dragRef.current = null;
-      if (!d || !d.moved) return;
+      if (!d) return;
+      if (!d.moved) {
+        // Clean click on the already-selected spot → widen one level (wraps).
+        if (d.samePlace) {
+          const prev = selectionRef.current;
+          if (prev) setSelection({ chain: prev.chain, index: (prev.index + 1) % prev.chain.length });
+        }
+        return;
+      }
 
-      const scale = compositionScale();
-      const dx = Math.round(((e.clientX - d.startX) / scale) * 10) / 10;
-      const dy = Math.round(((e.clientY - d.startY) / scale) * 10) / 10;
+      // Same local-px conversion the live preview used — drop point == final.
+      const dx = Math.round(((e.clientX - d.startX) / d.scale) * 10) / 10;
+      const dy = Math.round(((e.clientY - d.startY) / d.scale) * 10) / 10;
       d.sel.el.style.transform = d.origTransform;
 
       const [locSceneId, lineS, colS] = d.sel.loc.split(':');
@@ -297,7 +356,8 @@ function App() {
 
   const W = snap.project.width || 1920;
   const H = snap.project.height || 1080;
-  const selectedScene = selection ? snap.scenes.find((s) => s.id === selection.sceneId) : null;
+  const active = selection ? selection.chain[selection.index] : null;
+  const selectedScene = active ? snap.scenes.find((s) => s.id === active.sceneId) : null;
 
   return (
     <div className="app">
@@ -309,7 +369,7 @@ function App() {
             key={s.id}
             className={
               'scene' +
-              (selection?.sceneId === s.id ? ' on' : '') +
+              (active?.sceneId === s.id ? ' on' : '') +
               (s.hasCode ? '' : ' nocode')
             }
             onClick={() => playerRef.current?.seekTo(starts.get(s.id) ?? 0)}
@@ -322,11 +382,29 @@ function App() {
 
       <div className="main">
         <div className="bar">
-          <span className="sel">
-            {selection
-              ? `<${selection.tagName}> in ${selectedScene?.name ?? selection.sceneId.slice(0, 8)} @ ${selection.loc.split(':').slice(1).join(':')}`
-              : 'click an element to select · drag to move · space to play'}
-          </span>
+          {selection && active ? (
+            <span className="crumbs">
+              <b>{selectedScene?.name ?? active.sceneId.slice(0, 8)}</b>
+              {/* outermost → deepest, so it reads like a path; the group you
+                  drag is whichever crumb is lit */}
+              {[...selection.chain].reverse().map((p, i) => {
+                const idx = selection.chain.length - 1 - i;
+                return (
+                  <button
+                    key={p.loc + i}
+                    className={'crumb' + (idx === selection.index ? ' on' : '')}
+                    onClick={() => setSelection({ chain: selection.chain, index: idx })}
+                    title={`select this ${idx === 0 ? 'element' : 'group'} — drag moves it and everything inside`}
+                  >
+                    {p.tagName}
+                  </button>
+                );
+              })}
+              <i className="hint">click same spot again = select group</i>
+            </span>
+          ) : (
+            <span className="sel">click an element to select · click again for its group · space to play</span>
+          )}
           <span className="status">{status}</span>
         </div>
 
@@ -353,7 +431,7 @@ function App() {
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
           />
-          {selection && <SelectionBox target={selection.el} stage={stageRef.current} />}
+          {active && <SelectionBox target={active.el} stage={stageRef.current} />}
         </div>
 
         <div className="transport">

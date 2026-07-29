@@ -67,10 +67,60 @@ function isOurWrapper(node: JsxNode | null): boolean {
   );
 }
 
+/** A translate that WE emitted: plain 'translate(Xpx, Ypx)' string, nothing else. */
+const OURS_RE = /^translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)$/;
+
+interface StyleInfo {
+  /** ObjectExpression node of style={{ … }} — null if style is absent/opaque */
+  objStart: number | null;
+  /** existing transform property value if present */
+  transform: { start: number; end: number; value: string | null } | null;
+  /** true when a style attribute exists but isn't a plain object literal */
+  opaque: boolean;
+}
+
+function inspectStyle(node: JsxNode): StyleInfo {
+  const attrs = node.openingElement?.attributes || [];
+  for (const a of attrs as Array<Record<string, unknown>>) {
+    if (a.type !== 'JSXAttribute') continue;
+    const name = (a.name as { name?: string })?.name;
+    if (name !== 'style') continue;
+    const val = a.value as { type?: string; expression?: Record<string, unknown> } | undefined;
+    const expr = val?.type === 'JSXExpressionContainer' ? val.expression : null;
+    if (!expr || expr.type !== 'ObjectExpression') return { objStart: null, transform: null, opaque: true };
+    for (const p of (expr.properties as Array<Record<string, unknown>>) || []) {
+      if (p.type !== 'ObjectProperty') continue;
+      const key = p.key as { name?: string; value?: string };
+      if ((key?.name || key?.value) === 'transform') {
+        const v = p.value as { type?: string; value?: string; start: number; end: number };
+        return {
+          objStart: expr.start as number,
+          transform: {
+            start: v.start,
+            end: v.end,
+            value: v.type === 'StringLiteral' ? (v.value as string) : null,
+          },
+          opaque: false,
+        };
+      }
+    }
+    return { objStart: expr.start as number, transform: null, opaque: false };
+  }
+  return { objStart: null, transform: null, opaque: false };
+}
+
 /**
- * Apply a translate delta to the element at (line,col) of `tsx`.
- * Returns the patched TSX, or null when the element can't be resolved
- * (caller falls back to a Claude note — the hybrid path).
+ * Apply a translate delta (in the element's local px) to the element at
+ * (line,col). Strategy ladder, least-invasive first:
+ *
+ *   1. parent is our wrapper           → merge numbers into the wrapper
+ *   2. element has OUR translate       → merge numbers in place
+ *   3. element has NO transform        → inject into its own style object —
+ *      layout-neutral (transform never affects flow), so nothing shifts
+ *      after the drop the way an extra wrapper div could inside flex parents
+ *   4. element has a foreign transform → wrap (composes with animation math)
+ *
+ * Returns patched TSX or null (caller falls back to a Claude note).
  */
 export function applyTranslate(tsx: string, line: number, column: number, dx: number, dy: number): string | null {
   let found: ReturnType<typeof findElementAt>;
@@ -82,28 +132,48 @@ export function applyTranslate(tsx: string, line: number, column: number, dx: nu
   if (!found) return null;
 
   const { node, parent } = found;
+  const rx = Math.round(dx * 10) / 10;
+  const ry = Math.round(dy * 10) / 10;
 
-  // Merge into an existing wrapper (element already dragged before).
+  // 1. merge into an existing wrapper
   if (isOurWrapper(parent) && parent) {
     const open = parent.openingElement!;
     const openSrc = tsx.slice(open.start, open.end);
     const m = WRAP_RE.exec(openSrc);
+    if (!m) return null; // wrapper edited by someone else — don't guess
+    const nx = Math.round((parseFloat(m[1]) + dx) * 10) / 10;
+    const ny = Math.round((parseFloat(m[2]) + dy) * 10) / 10;
+    const newOpen = openSrc.replace(WRAP_RE, `data-bazwrap style={{ transform: 'translate(${nx}px, ${ny}px)' }}`);
+    return tsx.slice(0, open.start) + newOpen + tsx.slice(open.end);
+  }
+
+  const style = inspectStyle(node);
+
+  // 2. merge into our own earlier in-place translate
+  if (style.transform?.value) {
+    const m = OURS_RE.exec(style.transform.value);
     if (m) {
       const nx = Math.round((parseFloat(m[1]) + dx) * 10) / 10;
       const ny = Math.round((parseFloat(m[2]) + dy) * 10) / 10;
-      const newOpen = openSrc.replace(
-        WRAP_RE,
-        `data-bazwrap style={{ transform: 'translate(${nx}px, ${ny}px)' }}`
-      );
-      return tsx.slice(0, open.start) + newOpen + tsx.slice(open.end);
+      return tsx.slice(0, style.transform.start) + `'translate(${nx}px, ${ny}px)'` + tsx.slice(style.transform.end);
     }
-    // Wrapper exists but doesn't match our emitted shape (agent edited it?) —
-    // don't guess at someone else's code.
+  }
+
+  // 3. no transform → inject into the element's own style (layout-neutral)
+  if (!style.transform && !style.opaque) {
+    if (style.objStart !== null) {
+      const insert = style.objStart + 1; // just inside the '{'
+      return tsx.slice(0, insert) + ` transform: 'translate(${rx}px, ${ry}px)',` + tsx.slice(insert);
+    }
+    // no style attribute at all → add one right after the tag name
+    const nameEnd = node.openingElement?.name?.end;
+    if (typeof nameEnd === 'number') {
+      return tsx.slice(0, nameEnd) + ` style={{ transform: 'translate(${rx}px, ${ry}px)' }}` + tsx.slice(nameEnd);
+    }
     return null;
   }
 
-  const rx = Math.round(dx * 10) / 10;
-  const ry = Math.round(dy * 10) / 10;
+  // 4. foreign transform (often animated) → wrapper, composes safely
   const before = `<div ${WRAP_ATTR} style={{ transform: 'translate(${rx}px, ${ry}px)' }}>`;
   return (
     tsx.slice(0, node.start) + before + tsx.slice(node.start, node.end) + '</div>' + tsx.slice(node.end)

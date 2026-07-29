@@ -27,15 +27,28 @@
   .crumb.on { background: rgba(95,211,148,.18); color: #7BE5A4; border-color: rgba(95,211,148,.45); }
   .crumbs .hint { font-style: normal; font-size: 10.5px; color: #6f695e; margin-left: 6px; }
   .bar .status { margin-left: auto; }
-  .stage { position: relative; width: 100%; max-height: calc(100% - 40px); background: #000; border-radius: 8px; overflow: hidden; align-self: center; }
+  .stage { position: relative; width: 100%; flex: 1 1 auto; min-height: 120px; background: #000; border-radius: 8px; overflow: hidden; }
   .hit-overlay { position: absolute; inset: 0; cursor: crosshair; z-index: 10; }
   .selbox { position: absolute; border: 1.5px solid #5FD394; box-shadow: 0 0 0 1px rgba(0,0,0,.6); pointer-events: none; z-index: 11; }
   .transport { display: flex; align-items: center; gap: 12px; }
   .play { width: 44px; height: 32px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16); color: #E8E4DA; border-radius: 7px; font: inherit; cursor: pointer; }
   .play:hover { background: rgba(255,255,255,.15); }
-  .strip { position: relative; flex: 1; height: 22px; background: rgba(255,255,255,.07); border-radius: 999px; overflow: hidden; cursor: pointer; touch-action: none; }
-  .seg { position: absolute; top: 0; bottom: 0; background: rgba(123,229,164,.13); border-right: 1px solid rgba(0,0,0,.5); }
-  .head { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #5FD394; box-shadow: 0 0 6px #5FD394; }
+  .hbtn { width: 34px; height: 32px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); color: #E8E4DA; border-radius: 7px; font: inherit; cursor: pointer; }
+  .hbtn:hover:not(:disabled) { background: rgba(255,255,255,.14); }
+  .hbtn:disabled { opacity: .3; cursor: default; }
+  .tl { position: relative; width: 100%; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09); border-radius: 9px; overflow: hidden; touch-action: none; user-select: none; cursor: default; }
+  .tl-ruler { position: absolute; top: 0; left: 0; right: 0; height: 20px; background: rgba(0,0,0,.25); cursor: pointer; }
+  .tl-row { position: absolute; left: 0; right: 0; height: 34px; border-top: 1px solid rgba(255,255,255,.06); }
+  .tl-tracklabel { position: absolute; left: 6px; top: 8px; font-size: 10px; color: #6f695e; font-family: ui-monospace, monospace; pointer-events: none; }
+  .tl-clip { position: absolute; background: rgba(123,229,164,.16); border: 1px solid rgba(123,229,164,.35); border-radius: 6px; overflow: hidden; cursor: grab; display: flex; align-items: center; }
+  .tl-clip:hover { background: rgba(123,229,164,.24); }
+  .tl-clip.on { background: rgba(123,229,164,.32); border-color: #5FD394; }
+  .tl-clip.ghosting { opacity: .85; border-style: dashed; cursor: grabbing; }
+  .tl-label { flex: 1; font-size: 11px; color: #DDEEDD; padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+  .tl-clip .hL, .tl-clip .hR { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
+  .tl-clip .hL { left: 0; border-left: 2px solid rgba(123,229,164,.55); }
+  .tl-clip .hR { right: 0; border-right: 2px solid rgba(123,229,164,.55); }
+  .tl-head { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #5FD394; box-shadow: 0 0 6px #5FD394; pointer-events: none; z-index: 5; }
   .tc { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: 15px; }
   .pad { padding: 30px; }
   .err { color: #ff8a8a; font-family: monospace; }

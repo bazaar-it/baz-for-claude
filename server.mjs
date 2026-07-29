@@ -204,6 +204,35 @@ if (args.replay) {
   process.exit(0);
 }
 
+/**
+ * Direct tRPC call with the CLI's own credentials, for the procedures the CLI
+ * doesn't wrap (scenes.reorderScenes). Same wire format as cli/src/lib/api.ts:
+ * POST {apiUrl}/api/trpc/<proc> with {"json": input} and x-api-key.
+ */
+async function bazTrpc(procedure, input) {
+  const cfg = JSON.parse(
+    await fsp.readFile(path.join(os.homedir(), '.bazaar', 'config.json'), 'utf8')
+  );
+  if (!cfg.apiKey) throw new Error('no baz api key — run: baz auth login');
+  const apiUrl = cfg.apiUrl || 'https://bazaar.it';
+  const res = await fetch(`${apiUrl}/api/trpc/${procedure}`, {
+    method: 'POST',
+    headers: { 'x-api-key': cfg.apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ json: input }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const msg =
+      (body && body.error && body.error.json && body.error.json.message) ||
+      (body && body.error && body.error.message) ||
+      `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return body && body.result && body.result.data
+    ? (body.result.data.json ?? body.result.data)
+    : body;
+}
+
 /** Run a baz command and parse its JSON, tolerating a leading ASCII banner. */
 async function bazJson(args) {
   const { stdout } = await execFileAsync('baz', args, {
@@ -608,6 +637,48 @@ const server = http.createServer(async (req, res) => {
       // One structured call for the whole project incl. all scene TSX.
       const snap = await bazJson(['state', '--json', '--include-code', '--project-id', session.project]);
       return send(res, 200, snap);
+    }
+
+    if (url.pathname === '/api/editor/positions' && req.method === 'POST') {
+      if (!session.project) return send(res, 400, { error: 'no project pinned' });
+      const body = JSON.parse((await readBody(req, 1024 * 256)).toString('utf8'));
+      if (!Array.isArray(body.updates) || !body.updates.length) {
+        return send(res, 400, { error: 'updates[] required' });
+      }
+      try {
+        // The CLI positions path is the one write that reports server truth
+        // (resolved[].finalTrack, autoPlaced) — use it rather than raw tRPC.
+        const result = await bazJson([
+          'scenes', 'positions',
+          '--updates-json', JSON.stringify(body.updates),
+          '--apply',
+          '--project-id', session.project,
+          '--json',
+        ]);
+        return send(res, 200, result);
+      } catch (err) {
+        return send(res, 500, { error: err && err.message ? err.message : String(err) });
+      }
+    }
+
+    if (url.pathname === '/api/editor/reorder' && req.method === 'POST') {
+      if (!session.project) return send(res, 400, { error: 'no project pinned' });
+      const body = JSON.parse((await readBody(req, 1024 * 256)).toString('utf8'));
+      if (!Array.isArray(body.sceneIds) || !body.sceneIds.length) {
+        return send(res, 400, { error: 'sceneIds[] required' });
+      }
+      try {
+        // Track-0 order IS its timing, but `scenes reorder` has no CLI surface
+        // — call the same tRPC procedure the web timeline uses, with the same
+        // credentials the CLI reads.
+        const result = await bazTrpc('scenes.reorderScenes', {
+          projectId: session.project,
+          sceneIds: body.sceneIds,
+        });
+        return send(res, 200, { success: true, result });
+      } catch (err) {
+        return send(res, 500, { error: err && err.message ? err.message : String(err) });
+      }
     }
 
     if (url.pathname === '/api/editor/scene-code' && req.method === 'PUT') {

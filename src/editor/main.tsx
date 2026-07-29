@@ -79,6 +79,18 @@ function timecode(frame: number): string {
   return `${String(m).padStart(2, '0')}:${(sec - m * 60).toFixed(2).padStart(5, '0')}`;
 }
 
+interface Timing { start?: number; track?: number; duration?: number }
+
+/**
+ * Undo is a ledger of committed edits, each with enough to run its inverse
+ * through the SAME write paths (set-code / positions / reorder). Cmd+Z pops
+ * one; Cmd+Shift+Z replays it.
+ */
+type UndoEntry =
+  | { kind: 'code'; sceneId: string; before: string; after: string }
+  | { kind: 'timing'; updates: Array<{ sceneId: string; before: Timing; after: Timing }> }
+  | { kind: 'reorder'; before: string[]; after: string[] };
+
 function App() {
   const [snap, setSnap] = useState<ProjectSnapshot | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -92,6 +104,10 @@ function App() {
   const playerRef = useRef<PlayerRef>(null);
   const selectionRef = useRef<Selection | null>(null);
   useEffect(() => { selectionRef.current = selection; }, [selection]);
+  const undoRef = useRef<UndoEntry[]>([]);
+  const redoRef = useRef<UndoEntry[]>([]);
+  const [historyLens, setHistoryLens] = useState({ undo: 0, redo: 0 });
+  const syncHistory = () => setHistoryLens({ undo: undoRef.current.length, redo: redoRef.current.length });
   const lastFrameRef = useRef(0);
   const wasPlayingRef = useRef(false);
   const dragRef = useRef<{
@@ -185,6 +201,145 @@ function App() {
     setSelection(null);
   }, [compiled, totalFrames]);
 
+  // ---- write paths (shared by direct edits and undo/redo) -------------------
+  const commitCode = useCallback(async (sceneId: string, code: string): Promise<string | null> => {
+    const r = await fetch('/api/editor/scene-code', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sceneId, code }),
+    });
+    const res = await r.json();
+    if (!r.ok) return res.error || 'save failed';
+    if (res.compilationError) return String(res.compilationError);
+    return null;
+  }, []);
+
+  const commitPositions = useCallback(async (updates: Array<{ sceneId: string } & Timing & { autoPlace?: boolean }>) => {
+    // Track 0 derives start from order — sending one only pollutes props.start
+    // with a value every renderer ignores. Strip it; round the rest to frames.
+    const clean = updates.map((u) => {
+      const c: Record<string, unknown> = { sceneId: u.sceneId };
+      if (u.start !== undefined && u.track !== 0) c.start = Math.round(u.start);
+      if (u.track !== undefined) c.track = u.track;
+      if (u.duration !== undefined) c.duration = Math.round(u.duration);
+      if (u.autoPlace) c.autoPlace = true;
+      return c;
+    });
+    const r = await fetch('/api/editor/positions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates: clean }),
+    });
+    const res = await r.json();
+    if (!r.ok) throw new Error(res.error || 'positions failed');
+    return res;
+  }, []);
+
+  const commitReorder = useCallback(async (sceneIds: string[]) => {
+    const r = await fetch('/api/editor/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sceneIds }),
+    });
+    const res = await r.json();
+    if (!r.ok) throw new Error(res.error || 'reorder failed');
+    return res;
+  }, []);
+
+  const applyLocalTiming = useCallback((updates: Array<{ sceneId: string } & Timing>) => {
+    setSnap((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        scenes: prev.scenes.map((s) => {
+          const u = updates.find((x) => x.sceneId === s.id);
+          if (!u) return s;
+          return {
+            ...s,
+            startFrame: u.start ?? s.startFrame,
+            track: u.track ?? s.track,
+            durationFrames: u.duration ?? s.durationFrames,
+          };
+        }),
+      };
+    });
+  }, []);
+
+  const applyLocalOrder = useCallback((sceneIds: string[]) => {
+    setSnap((prev) => {
+      if (!prev) return prev;
+      const pos = new Map(sceneIds.map((id, i) => [id, i]));
+      return {
+        ...prev,
+        scenes: prev.scenes.map((s) => (pos.has(s.id) ? { ...s, order: pos.get(s.id)! } : s)),
+      };
+    });
+  }, []);
+
+  /** Run one ledger entry in the given direction through the real write paths. */
+  const applyEntry = useCallback(
+    async (e: UndoEntry, dir: 'undo' | 'redo') => {
+      if (e.kind === 'code') {
+        const code = dir === 'undo' ? e.before : e.after;
+        const err = await commitCode(e.sceneId, code);
+        if (err) throw new Error(err);
+        setTsxById((m) => ({ ...m, [e.sceneId]: code }));
+      } else if (e.kind === 'timing') {
+        const updates = e.updates.map((u) => ({ sceneId: u.sceneId, ...(dir === 'undo' ? u.before : u.after) }));
+        await commitPositions(updates);
+        applyLocalTiming(updates);
+      } else {
+        const ids = dir === 'undo' ? e.before : e.after;
+        await commitReorder(ids);
+        applyLocalOrder(ids);
+      }
+    },
+    [commitCode, commitPositions, applyLocalTiming, applyLocalOrder, commitReorder]
+  );
+
+  const busyRef = useRef(false);
+  const undo = useCallback(async () => {
+    if (busyRef.current) return;
+    const e = undoRef.current[undoRef.current.length - 1];
+    if (!e) { setStatus('nothing to undo'); return; }
+    busyRef.current = true;
+    try {
+      await applyEntry(e, 'undo');
+      undoRef.current.pop();
+      redoRef.current.push(e);
+      setStatus(`↩ undid ${e.kind === 'code' ? 'element edit' : e.kind}`);
+    } catch (err) {
+      setStatus(`✗ undo failed: ${(err as Error).message}`);
+    } finally {
+      busyRef.current = false;
+      syncHistory();
+    }
+  }, [applyEntry]);
+
+  const redo = useCallback(async () => {
+    if (busyRef.current) return;
+    const e = redoRef.current[redoRef.current.length - 1];
+    if (!e) { setStatus('nothing to redo'); return; }
+    busyRef.current = true;
+    try {
+      await applyEntry(e, 'redo');
+      redoRef.current.pop();
+      undoRef.current.push(e);
+      setStatus(`↪ redid ${e.kind === 'code' ? 'element edit' : e.kind}`);
+    } catch (err) {
+      setStatus(`✗ redo failed: ${(err as Error).message}`);
+    } finally {
+      busyRef.current = false;
+      syncHistory();
+    }
+  }, [applyEntry]);
+
+  const pushUndo = useCallback((e: UndoEntry) => {
+    undoRef.current.push(e);
+    redoRef.current = []; // a fresh edit invalidates the redo branch
+    syncHistory();
+  }, []);
+
   // ---- transport ------------------------------------------------------------
   const togglePlay = useCallback(() => {
     const p = playerRef.current;
@@ -196,21 +351,59 @@ function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (/^(INPUT|TEXTAREA)$/.test((document.activeElement as HTMLElement)?.tagName || '')) return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) void redo(); else void undo();
+        return;
+      }
       if (e.key === ' ') { e.preventDefault(); togglePlay(); }
       else if (e.key === 'ArrowRight') { e.preventDefault(); playerRef.current?.seekTo(lastFrameRef.current + (e.shiftKey ? 10 : 1)); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); playerRef.current?.seekTo(Math.max(0, lastFrameRef.current - (e.shiftKey ? 10 : 1))); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [togglePlay]);
+  }, [togglePlay, undo, redo]);
 
-  const seekFromStrip = useCallback(
-    (clientX: number, strip: HTMLElement) => {
-      const r = strip.getBoundingClientRect();
-      const pct = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
-      playerRef.current?.seekTo(Math.round(pct * (totalFrames - 1)));
+  // ---- timeline commits -----------------------------------------------------
+  const onTimelineCommit = useCallback(
+    async (a: TimelineAction) => {
+      if (a.type === 'reorder') {
+        applyLocalOrder(a.order);
+        setStatus('reordering…');
+        try {
+          await commitReorder(a.order);
+          pushUndo({ kind: 'reorder', before: a.prev, after: a.order });
+          setStatus('✓ reordered — ⌘Z to undo');
+        } catch (err) {
+          applyLocalOrder(a.prev);
+          setStatus(`✗ reorder failed, reverted: ${(err as Error).message}`);
+        }
+        return;
+      }
+
+      const after: Timing =
+        a.type === 'retime'
+          ? { ...(a.start !== undefined ? { start: a.start } : {}), ...(a.track !== undefined ? { track: a.track } : {}) }
+          : { ...(a.start !== undefined ? { start: a.start } : {}), duration: a.duration };
+      const update = { sceneId: a.sceneId, ...after, ...(a.type === 'retime' && a.track !== undefined ? { autoPlace: true } : {}) };
+
+      applyLocalTiming([update]);
+      setStatus('saving timing…');
+      try {
+        const res = await commitPositions([update]);
+        // The server may auto-place onto a different track — its truth wins.
+        const resolved = Array.isArray(res.resolved) ? res.resolved[0] : null;
+        if (resolved && resolved.finalTrack !== undefined && resolved.finalTrack !== update.track && update.track !== undefined) {
+          applyLocalTiming([{ sceneId: a.sceneId, track: resolved.finalTrack }]);
+        }
+        pushUndo({ kind: 'timing', updates: [{ sceneId: a.sceneId, before: a.prev, after }] });
+        setStatus(`✓ timing saved — ⌘Z to undo`);
+      } catch (err) {
+        applyLocalTiming([{ sceneId: a.sceneId, ...a.prev }]);
+        setStatus(`✗ timing failed, reverted: ${(err as Error).message}`);
+      }
     },
-    [totalFrames]
+    [applyLocalOrder, applyLocalTiming, commitPositions, commitReorder, pushUndo]
   );
 
   // ---- canvas hit-testing + drag -------------------------------------------
@@ -328,26 +521,16 @@ function App() {
 
       setTsxById((m) => ({ ...m, [locSceneId]: patched }));
       setStatus(`saving <${d.sel.tagName}> translate(${dx}, ${dy})…`);
-      try {
-        const r = await fetch('/api/editor/scene-code', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sceneId: locSceneId, code: patched }),
-        });
-        const res = await r.json();
-        if (!r.ok) throw new Error(res.error || 'save failed');
-        if (res.compilationError) {
-          setTsxById((m) => ({ ...m, [locSceneId]: current }));
-          setStatus(`✗ server compile error, reverted: ${String(res.compilationError).slice(0, 110)}`);
-          return;
-        }
-        setStatus(`✓ saved <${d.sel.tagName}> translate(${dx}px, ${dy}px)`);
-      } catch (err) {
+      const err = await commitCode(locSceneId, patched).catch((e2: Error) => e2.message);
+      if (err) {
         setTsxById((m) => ({ ...m, [locSceneId]: current }));
-        setStatus(`✗ save failed, reverted: ${(err as Error).message}`);
+        setStatus(`✗ reverted: ${String(err).slice(0, 110)}`);
+        return;
       }
+      pushUndo({ kind: 'code', sceneId: locSceneId, before: current, after: patched });
+      setStatus(`✓ saved <${d.sel.tagName}> translate(${dx}px, ${dy}px) — ⌘Z to undo`);
     },
-    [tsxById, compositionScale]
+    [tsxById, compositionScale, commitCode, pushUndo]
   );
 
   // ---- render ---------------------------------------------------------------
@@ -408,7 +591,7 @@ function App() {
           <span className="status">{status}</span>
         </div>
 
-        <div className="stage" ref={stageRef} style={{ aspectRatio: `${W} / ${H}` }}>
+        <div className="stage" ref={stageRef}>
           {compiled?.error && <div className="pad err">Compile error: {compiled.error}</div>}
           {lazyComponent && (
             <Player
@@ -436,39 +619,232 @@ function App() {
 
         <div className="transport">
           <button className="play" onClick={togglePlay}>{playing ? '❚❚' : '▶'}</button>
-          <div
-            className="strip"
-            onPointerDown={(e) => {
-              const strip = e.currentTarget;
-              try { strip.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
-              playerRef.current?.pause();
-              seekFromStrip(e.clientX, strip);
-              const move = (ev: PointerEvent) => seekFromStrip(ev.clientX, strip);
-              const up = () => {
-                strip.removeEventListener('pointermove', move);
-                strip.removeEventListener('pointerup', up);
-              };
-              strip.addEventListener('pointermove', move);
-              strip.addEventListener('pointerup', up);
-            }}
-          >
-            {snap.scenes
-              .filter((s) => s.track === 0)
-              .map((s) => (
-                <div
-                  key={s.id}
-                  className="seg"
-                  style={{
-                    left: `${((starts.get(s.id) ?? 0) / totalFrames) * 100}%`,
-                    width: `${((s.durationFrames || 150) / totalFrames) * 100}%`,
-                  }}
-                />
-              ))}
-            <div className="head" style={{ left: `${(frame / Math.max(1, totalFrames - 1)) * 100}%` }} />
-          </div>
+          <button className="hbtn" disabled={!historyLens.undo} onClick={() => void undo()} title="Undo (⌘Z)">↩</button>
+          <button className="hbtn" disabled={!historyLens.redo} onClick={() => void redo()} title="Redo (⇧⌘Z)">↪</button>
+          <span className="spacer" />
           <span className="tc">{timecode(frame)}</span>
         </div>
+
+        <Timeline
+          scenes={snap.scenes}
+          starts={starts}
+          totalFrames={totalFrames}
+          frame={frame}
+          activeSceneId={active?.sceneId ?? null}
+          onSeek={(f) => { playerRef.current?.pause(); playerRef.current?.seekTo(f); }}
+          commit={onTimelineCommit}
+        />
       </div>
+    </div>
+  );
+}
+
+type TimelineAction =
+  | { type: 'retime'; sceneId: string; start?: number; track?: number; prev: Timing }
+  | { type: 'resize'; sceneId: string; start?: number; duration: number; prev: Timing }
+  | { type: 'reorder'; order: string[]; prev: string[] };
+
+const ROW_H = 34;
+const RULER_H = 20;
+const SNAP = 10; // frames, mirrors the RVE timeline
+
+/**
+ * Tracks-as-rows timeline (the baz.studio panel shape): highest track on top,
+ * track 0 at the bottom. Clips drag horizontally to retime, vertically to
+ * change track, and resize at the edges for duration. Track 0's semantics are
+ * the platform's: its horizontal order IS its timing, so a same-row drag on
+ * track 0 commits a REORDER; explicit starts only exist on track ≥1, and
+ * track-0 left edges can't be trimmed (start is derived).
+ */
+function Timeline(props: {
+  scenes: SceneInfo[];
+  starts: Map<string, number>;
+  totalFrames: number;
+  frame: number;
+  activeSceneId: string | null;
+  onSeek: (f: number) => void;
+  commit: (a: TimelineAction) => void;
+}) {
+  const { scenes, starts, totalFrames, frame, activeSceneId, onSeek, commit } = props;
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [ghost, setGhost] = useState<({ sceneId: string } & Required<Pick<Timing, 'start' | 'track' | 'duration'>>) | null>(null);
+  const dragRef = useRef<{
+    sceneId: string;
+    zone: 'move' | 'resize-l' | 'resize-r';
+    startX: number;
+    startY: number;
+    orig: { start: number; track: number; duration: number };
+    moved: boolean;
+  } | null>(null);
+
+  const tracksDesc = useMemo(
+    () => [...new Set(scenes.map((s) => s.track))].sort((a, b) => b - a),
+    [scenes]
+  );
+
+  const pxPerFrame = () => (wrapRef.current ? wrapRef.current.getBoundingClientRect().width / totalFrames : 1);
+
+  const snapFrames = (value: number, self: string): number => {
+    const candidates: number[] = [0];
+    for (const s of scenes) {
+      if (s.id === self) continue;
+      const st = starts.get(s.id) ?? 0;
+      candidates.push(st, st + (s.durationFrames || 150));
+    }
+    let best = value;
+    let bestD = SNAP + 1;
+    for (const c of candidates) {
+      const d = Math.abs(c - value);
+      if (d < bestD) { bestD = d; best = c; }
+    }
+    return bestD <= SNAP ? best : value;
+  };
+
+  const onDown = (e: React.PointerEvent) => {
+    const wrap = wrapRef.current!;
+    const clipEl = (e.target as HTMLElement).closest('[data-clip]') as HTMLElement | null;
+    try { wrap.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
+
+    if (!clipEl) {
+      // Ruler / empty space: scrub.
+      const r = wrap.getBoundingClientRect();
+      const seek = (x: number) => onSeek(Math.round(Math.max(0, Math.min(1, (x - r.left) / r.width)) * (totalFrames - 1)));
+      seek(e.clientX);
+      const move = (ev: PointerEvent) => seek(ev.clientX);
+      const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+      return;
+    }
+
+    const sceneId = clipEl.getAttribute('data-clip')!;
+    const scene = scenes.find((s) => s.id === sceneId)!;
+    const rect = clipEl.getBoundingClientRect();
+    const zone: 'move' | 'resize-l' | 'resize-r' =
+      e.clientX - rect.left <= 8 ? 'resize-l' : rect.right - e.clientX <= 8 ? 'resize-r' : 'move';
+    dragRef.current = {
+      sceneId,
+      zone,
+      startX: e.clientX,
+      startY: e.clientY,
+      orig: { start: starts.get(sceneId) ?? 0, track: scene.track, duration: scene.durationFrames || 150 },
+      moved: false,
+    };
+  };
+
+  const onMove = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dxF = Math.round((e.clientX - d.startX) / pxPerFrame());
+    if (Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY) > 3) d.moved = true;
+    if (!d.moved) return;
+
+    if (d.zone === 'move') {
+      const wrap = wrapRef.current!.getBoundingClientRect();
+      const row = Math.max(0, Math.min(tracksDesc.length - 1, Math.floor((e.clientY - wrap.top - RULER_H) / ROW_H)));
+      setGhost({
+        sceneId: d.sceneId,
+        start: snapFrames(Math.max(0, d.orig.start + dxF), d.sceneId),
+        track: tracksDesc[row],
+        duration: d.orig.duration,
+      });
+    } else if (d.zone === 'resize-r') {
+      const end = snapFrames(d.orig.start + Math.max(5, d.orig.duration + dxF), d.sceneId);
+      setGhost({ sceneId: d.sceneId, start: d.orig.start, track: d.orig.track, duration: Math.max(5, end - d.orig.start) });
+    } else {
+      // left trim: start moves, end stays — meaningless on track 0 (derived start)
+      if (d.orig.track === 0) return;
+      const ns = snapFrames(Math.max(0, Math.min(d.orig.start + dxF, d.orig.start + d.orig.duration - 5)), d.sceneId);
+      setGhost({ sceneId: d.sceneId, start: ns, track: d.orig.track, duration: d.orig.start + d.orig.duration - ns });
+    }
+  };
+
+  const onUp = () => {
+    const d = dragRef.current;
+    const g = ghost;
+    dragRef.current = null;
+    setGhost(null);
+    if (!d || !d.moved || !g) return;
+
+    if (d.zone === 'move') {
+      if (g.track === 0 && d.orig.track === 0) {
+        // Same-row move on track 0 = reorder by dragged centre.
+        const t0 = scenes.filter((s) => s.track === 0).sort((a, b) => (starts.get(a.id) ?? 0) - (starts.get(b.id) ?? 0));
+        const others = t0.filter((s) => s.id !== d.sceneId);
+        const centre = g.start + g.duration / 2;
+        let idx = 0;
+        for (const s of others) {
+          const st = starts.get(s.id) ?? 0;
+          if (centre > st + (s.durationFrames || 150) / 2) idx++;
+        }
+        const prevIds = [...t0.map((s) => s.id), ...scenes.filter((s) => s.track !== 0).map((s) => s.id)];
+        const newT0 = [...others.slice(0, idx).map((s) => s.id), d.sceneId, ...others.slice(idx).map((s) => s.id)];
+        const order = [...newT0, ...scenes.filter((s) => s.track !== 0).map((s) => s.id)];
+        if (order.join() !== prevIds.join()) commit({ type: 'reorder', order, prev: prevIds });
+        return;
+      }
+      commit({
+        type: 'retime',
+        sceneId: d.sceneId,
+        // Track 0 derives start from order — never send one when landing there.
+        ...(g.track === 0 ? {} : { start: g.start }),
+        ...(g.track !== d.orig.track ? { track: g.track } : {}),
+        prev: { start: d.orig.start, track: d.orig.track },
+      });
+      return;
+    }
+
+    commit({
+      type: 'resize',
+      sceneId: d.sceneId,
+      duration: g.duration,
+      ...(d.zone === 'resize-l' ? { start: g.start } : {}),
+      prev: { start: d.orig.start, duration: d.orig.duration },
+    });
+  };
+
+  return (
+    <div
+      ref={wrapRef}
+      className="tl"
+      style={{ height: RULER_H + tracksDesc.length * ROW_H }}
+      onPointerDown={onDown}
+      onPointerMove={onMove}
+      onPointerUp={onUp}
+    >
+      <div className="tl-ruler" />
+      {tracksDesc.map((t, row) => (
+        <div key={t} className="tl-row" style={{ top: RULER_H + row * ROW_H }}>
+          <span className="tl-tracklabel">t{t}</span>
+        </div>
+      ))}
+      {scenes.map((s) => {
+        const g = ghost?.sceneId === s.id ? ghost : null;
+        const start = g ? g.start : starts.get(s.id) ?? 0;
+        const dur = g ? g.duration : s.durationFrames || 150;
+        const track = g ? g.track : s.track;
+        const row = tracksDesc.indexOf(track);
+        if (row < 0) return null;
+        return (
+          <div
+            key={s.id}
+            data-clip={s.id}
+            className={'tl-clip' + (s.id === activeSceneId ? ' on' : '') + (g ? ' ghosting' : '')}
+            style={{
+              left: `${(start / totalFrames) * 100}%`,
+              width: `${(dur / totalFrames) * 100}%`,
+              top: RULER_H + row * ROW_H + 3,
+              height: ROW_H - 6,
+            }}
+            title={`${s.name} · ${timecode(start)} → ${timecode(start + dur)}${track === 0 ? ' · drag = reorder' : ''}`}
+          >
+            <i className="hL" />
+            <span className="tl-label">{s.name}</span>
+            <i className="hR" />
+          </div>
+        );
+      })}
+      <div className="tl-head" style={{ left: `${(frame / Math.max(1, totalFrames - 1)) * 100}%` }} />
     </div>
   );
 }

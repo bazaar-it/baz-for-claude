@@ -586,6 +586,60 @@ const server = http.createServer(async (req, res) => {
       return res.end(html);
     }
 
+    // ---- editor (spike) ----------------------------------------------------
+    if (url.pathname === '/editor') {
+      const html = await fsp.readFile(path.join(__dirname, 'dist', 'editor.html'), 'utf8');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(html);
+    }
+
+    if (url.pathname.startsWith('/dist/')) {
+      const p = path.resolve(path.join(__dirname, url.pathname.slice(1)));
+      if (!p.startsWith(path.join(__dirname, 'dist') + path.sep) || !fs.existsSync(p)) {
+        return send(res, 404, { error: 'not found' });
+      }
+      const type = p.endsWith('.js') ? 'application/javascript' : p.endsWith('.html') ? 'text/html' : 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+      return fs.createReadStream(p).pipe(res);
+    }
+
+    if (url.pathname === '/api/editor/project' && req.method === 'GET') {
+      if (!session.project) return send(res, 400, { error: 'editor needs --project <baz-project-id>' });
+      // One structured call for the whole project incl. all scene TSX.
+      const snap = await bazJson(['state', '--json', '--include-code', '--project-id', session.project]);
+      return send(res, 200, snap);
+    }
+
+    if (url.pathname === '/api/editor/scene-code' && req.method === 'PUT') {
+      if (!session.project) return send(res, 400, { error: 'no project pinned' });
+      const body = JSON.parse((await readBody(req)).toString('utf8'));
+      if (!body.sceneId || typeof body.code !== 'string') {
+        return send(res, 400, { error: 'sceneId and code required' });
+      }
+      const tmp = path.join(os.tmpdir(), `baz-editor-${Date.now().toString(36)}.tsx`);
+      await fsp.writeFile(tmp, body.code, 'utf8');
+      try {
+        // Pinned project id on the write — the anti-leak rule. NOTE: set-code
+        // reports compile failures in-band; success here does NOT mean valid
+        // code, the client must check compilationError.
+        const result = await bazJson([
+          'scenes', 'set-code', body.sceneId,
+          '--file', tmp,
+          '--project-id', session.project,
+          '--json',
+        ]);
+        return send(res, 200, {
+          success: true,
+          compilationError: result.compilationError ?? null,
+          revision: result.revision ?? null,
+        });
+      } catch (err) {
+        return send(res, 500, { error: err && err.message ? err.message : String(err) });
+      } finally {
+        fsp.unlink(tmp).catch(() => {});
+      }
+    }
+
     if (url.pathname === '/stream') {
       const target = url.searchParams.get('u');
       if (!target) return send(res, 400, { error: 'missing u' });

@@ -36,5 +36,18 @@
   "homepage": "https://github.com/bazaar-it/baz-for-claude#readme",
   "bugs": {
     "url": "https://github.com/bazaar-it/baz-for-claude/issues"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.29.7",
+    "@iconify/react": "^6.0.2",
+    "@remotion/player": "4.0.320",
+    "@remotion/shapes": "4.0.320",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "remotion": "4.0.320",
+    "sucrase": "^3.35.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
   }
 }

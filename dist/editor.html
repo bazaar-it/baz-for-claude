@@ -30,6 +30,11 @@
   .stage { position: relative; width: 100%; flex: 1 1 auto; min-height: 120px; background: #000; border-radius: 8px; overflow: hidden; }
   .hit-overlay { position: absolute; inset: 0; cursor: crosshair; z-index: 10; }
   .selbox { position: absolute; border: 1.5px solid #5FD394; box-shadow: 0 0 0 1px rgba(0,0,0,.6); pointer-events: none; z-index: 11; }
+  .selhandle { position: absolute; width: 10px; height: 10px; background: #5FD394; border: 1.5px solid #0b2018; border-radius: 2px; z-index: 12; touch-action: none; }
+  .baz-editing { outline: 2px dashed #5FD394 !important; outline-offset: 2px; cursor: text; }
+  .hit-overlay.pass { pointer-events: none; }
+  .brandmini { font-family: Georgia, serif; font-style: italic; font-size: 15px; color: #F0EBE0; }
+  .projmini { color: #8A8377; font-size: 11.5px; margin-right: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
   .transport { display: flex; align-items: center; gap: 12px; }
   .play { width: 44px; height: 32px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16); color: #E8E4DA; border-radius: 7px; font: inherit; cursor: pointer; }
   .play:hover { background: rgba(255,255,255,.15); }
@@ -40,10 +45,10 @@
   .tl-ruler { position: absolute; top: 0; left: 0; right: 0; height: 20px; background: rgba(0,0,0,.25); cursor: pointer; }
   .tl-row { position: absolute; left: 0; right: 0; height: 34px; border-top: 1px solid rgba(255,255,255,.06); }
   .tl-tracklabel { position: absolute; left: 6px; top: 8px; font-size: 10px; color: #6f695e; font-family: ui-monospace, monospace; pointer-events: none; }
-  .tl-clip { position: absolute; background: rgba(123,229,164,.16); border: 1px solid rgba(123,229,164,.35); border-radius: 6px; overflow: hidden; cursor: grab; display: flex; align-items: center; }
+  .tl-clip { position: absolute; background: rgba(123,229,164,.16); border: 1px solid rgba(123,229,164,.35); border-radius: 6px; overflow: hidden; cursor: grab; display: flex; align-items: center; transition: left .16s ease, top .16s ease; }
   .tl-clip:hover { background: rgba(123,229,164,.24); }
   .tl-clip.on { background: rgba(123,229,164,.32); border-color: #5FD394; }
-  .tl-clip.ghosting { opacity: .85; border-style: dashed; cursor: grabbing; }
+  .tl-clip.ghosting { opacity: .85; border-style: dashed; cursor: grabbing; transition: none; z-index: 4; }
   .tl-label { flex: 1; font-size: 11px; color: #DDEEDD; padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
   .tl-clip .hL, .tl-clip .hR { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
   .tl-clip .hL { left: 0; border-left: 2px solid rgba(123,229,164,.55); }

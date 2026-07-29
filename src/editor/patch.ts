@@ -32,7 +32,12 @@ interface JsxNode {
 }
 
 const WRAP_ATTR = 'data-bazwrap';
-const WRAP_RE = /data-bazwrap\s+style=\{\{\s*transform:\s*'translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)'\s*\}\}/;
+// Our emitted transform grammar: translate always, scale optional.
+const WRAP_RE = /data-bazwrap\s+style=\{\{\s*transform:\s*'translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)(?:\s*scale\((-?[\d.]+)\))?'\s*\}\}/;
+
+const fmt = (n: number) => Math.round(n * 1000) / 1000;
+const transformStr = (x: number, y: number, k: number) =>
+  `translate(${fmt(x)}px, ${fmt(y)}px)${fmt(k) !== 1 ? ` scale(${fmt(k)})` : ''}`;
 
 function findElementAt(tsx: string, line: number, column: number): { node: JsxNode; parent: JsxNode | null } | null {
   const ast = parse(tsx, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: true });
@@ -67,8 +72,8 @@ function isOurWrapper(node: JsxNode | null): boolean {
   );
 }
 
-/** A translate that WE emitted: plain 'translate(Xpx, Ypx)' string, nothing else. */
-const OURS_RE = /^translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)$/;
+/** A transform WE emitted: 'translate(Xpx, Ypx)' with optional ' scale(K)'. */
+const OURS_RE = /^translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)(?:\s*scale\((-?[\d.]+)\))?$/;
 
 interface StyleInfo {
   /** ObjectExpression node of style={{ … }} — null if style is absent/opaque */
@@ -123,6 +128,18 @@ function inspectStyle(node: JsxNode): StyleInfo {
  * Returns patched TSX or null (caller falls back to a Claude note).
  */
 export function applyTranslate(tsx: string, line: number, column: number, dx: number, dy: number): string | null {
+  return applyTransform(tsx, line, column, dx, dy, 1);
+}
+
+/** Translate + uniform scale, same strategy ladder as before. */
+export function applyTransform(
+  tsx: string,
+  line: number,
+  column: number,
+  dx: number,
+  dy: number,
+  dScale: number
+): string | null {
   let found: ReturnType<typeof findElementAt>;
   try {
     found = findElementAt(tsx, line, column);
@@ -132,8 +149,6 @@ export function applyTranslate(tsx: string, line: number, column: number, dx: nu
   if (!found) return null;
 
   const { node, parent } = found;
-  const rx = Math.round(dx * 10) / 10;
-  const ry = Math.round(dy * 10) / 10;
 
   // 1. merge into an existing wrapper
   if (isOurWrapper(parent) && parent) {
@@ -141,41 +156,73 @@ export function applyTranslate(tsx: string, line: number, column: number, dx: nu
     const openSrc = tsx.slice(open.start, open.end);
     const m = WRAP_RE.exec(openSrc);
     if (!m) return null; // wrapper edited by someone else — don't guess
-    const nx = Math.round((parseFloat(m[1]) + dx) * 10) / 10;
-    const ny = Math.round((parseFloat(m[2]) + dy) * 10) / 10;
-    const newOpen = openSrc.replace(WRAP_RE, `data-bazwrap style={{ transform: 'translate(${nx}px, ${ny}px)' }}`);
+    const t = transformStr(parseFloat(m[1]) + dx, parseFloat(m[2]) + dy, (m[3] ? parseFloat(m[3]) : 1) * dScale);
+    const newOpen = openSrc.replace(WRAP_RE, `data-bazwrap style={{ transform: '${t}' }}`);
     return tsx.slice(0, open.start) + newOpen + tsx.slice(open.end);
   }
 
   const style = inspectStyle(node);
 
-  // 2. merge into our own earlier in-place translate
+  // 2. merge into our own earlier in-place transform
   if (style.transform?.value) {
     const m = OURS_RE.exec(style.transform.value);
     if (m) {
-      const nx = Math.round((parseFloat(m[1]) + dx) * 10) / 10;
-      const ny = Math.round((parseFloat(m[2]) + dy) * 10) / 10;
-      return tsx.slice(0, style.transform.start) + `'translate(${nx}px, ${ny}px)'` + tsx.slice(style.transform.end);
+      const t = transformStr(parseFloat(m[1]) + dx, parseFloat(m[2]) + dy, (m[3] ? parseFloat(m[3]) : 1) * dScale);
+      return tsx.slice(0, style.transform.start) + `'${t}'` + tsx.slice(style.transform.end);
     }
   }
 
   // 3. no transform → inject into the element's own style (layout-neutral)
   if (!style.transform && !style.opaque) {
+    const t = transformStr(dx, dy, dScale);
     if (style.objStart !== null) {
       const insert = style.objStart + 1; // just inside the '{'
-      return tsx.slice(0, insert) + ` transform: 'translate(${rx}px, ${ry}px)',` + tsx.slice(insert);
+      return tsx.slice(0, insert) + ` transform: '${t}',` + tsx.slice(insert);
     }
     // no style attribute at all → add one right after the tag name
     const nameEnd = node.openingElement?.name?.end;
     if (typeof nameEnd === 'number') {
-      return tsx.slice(0, nameEnd) + ` style={{ transform: 'translate(${rx}px, ${ry}px)' }}` + tsx.slice(nameEnd);
+      return tsx.slice(0, nameEnd) + ` style={{ transform: '${t}' }}` + tsx.slice(nameEnd);
     }
     return null;
   }
 
   // 4. foreign transform (often animated) → wrapper, composes safely
-  const before = `<div ${WRAP_ATTR} style={{ transform: 'translate(${rx}px, ${ry}px)' }}>`;
+  const before = `<div ${WRAP_ATTR} style={{ transform: '${transformStr(dx, dy, dScale)}' }}>`;
   return (
     tsx.slice(0, node.start) + before + tsx.slice(node.start, node.end) + '</div>' + tsx.slice(node.end)
   );
+}
+
+/**
+ * Replace an element's PURE-TEXT content, for double-click inline editing.
+ * Only applies when the children are static text (JSXText nodes, or a single
+ * {"string"} expression we wrote earlier). Anything code-generated returns
+ * null — that text belongs to a prompt, not a caret.
+ */
+export function applyTextEdit(tsx: string, line: number, column: number, newText: string): string | null {
+  let found: ReturnType<typeof findElementAt>;
+  try {
+    found = findElementAt(tsx, line, column);
+  } catch {
+    return null;
+  }
+  if (!found) return null;
+  const node = found.node as JsxNode & {
+    children?: Array<{ type: string; start: number; end: number; expression?: { type?: string } }>;
+  };
+  const kids = (node.children || []).filter(
+    (c) => !(c.type === 'JSXText' && tsx.slice(c.start, c.end).trim() === '')
+  );
+  if (!kids.length) return null;
+  const pure = kids.every(
+    (c) =>
+      c.type === 'JSXText' ||
+      (c.type === 'JSXExpressionContainer' && c.expression?.type === 'StringLiteral')
+  );
+  if (!pure) return null;
+  const from = Math.min(...kids.map((c) => c.start));
+  const to = Math.max(...kids.map((c) => c.end));
+  // JSON-stringified expression child: safe for braces, angles, quotes, emoji.
+  return tsx.slice(0, from) + `{${JSON.stringify(newText)}}` + tsx.slice(to);
 }

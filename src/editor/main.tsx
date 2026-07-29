@@ -11,7 +11,7 @@ import { createRoot } from 'react-dom/client';
 import { Player, type PlayerRef } from '@remotion/player';
 import { installGlobals } from './globals';
 import { compileComposition, type CompScene } from './compile';
-import { applyTranslate } from './patch';
+import { applyTranslate, applyTransform, applyTextEdit } from './patch';
 
 installGlobals();
 
@@ -161,17 +161,94 @@ function App() {
     return compileComposition(compScenes);
   }, [snap, tsxById, starts]);
 
-  const lazyComponent = useMemo(() => {
-    if (!compiled || compiled.error) return null;
+  // ---- double-buffered players: recompiles swap with NO flash ---------------
+  // A recompile mounts the new module as a hidden "back" player, seeks it to
+  // the current frame, and only once it has actually presented a frame do we
+  // promote it to front (same React key → no remount on promotion). The old
+  // player stays visible the whole time — the swap is invisible.
+  interface PB { id: number; lazy: () => Promise<{ default: unknown }> }
+  const [players, setPlayers] = useState<{ front: PB | null; back: PB | null }>({ front: null, back: null });
+  const pbIdRef = useRef(0);
+  const backRef = useRef<PlayerRef>(null);
+
+  useEffect(() => {
+    if (!compiled || compiled.error) return;
     const url = compiled.blobUrl;
-    return () => import(/* @vite-ignore */ url).then((m) => ({ default: m.default }));
+    const pb: PB = {
+      id: ++pbIdRef.current,
+      lazy: () => import(/* @vite-ignore */ url).then((m) => ({ default: m.default })),
+    };
+    setPlayers((prev) => (prev.front ? { front: prev.front, back: pb } : { front: pb, back: null }));
   }, [compiled]);
 
-  // ---- playhead continuity across recompiles --------------------------------
-  // The Player remounts on every recompile (new module = new key). Track frame
-  // and play-state continuously; after a remount, put both back — this is what
-  // makes "drag, then press play" feel continuous instead of resetting.
   useEffect(() => {
+    if (!players.back) return;
+    let done = false;
+    const dbg = (m: string) => {
+      const w = window as unknown as { __bazdbg?: string[] };
+      w.__bazdbg = (w.__bazdbg || []).concat(`${Math.round(performance.now())} ${m}`);
+    };
+    dbg(`back mounted id=${players.back.id}`);
+    const promote = (why: string) => {
+      if (done) return;
+      done = true;
+      dbg(`promote via ${why}`);
+      setSelection(null); // the old DOM is about to unmount
+      setPlayers((prev) => (prev.back ? { front: prev.back, back: null } : prev));
+    };
+    // Promote one paint AFTER readiness: the hidden player gets a painted frame
+    // at opacity 0 first, so the opacity flip lands on already-rendered pixels.
+    // rAF starves in throttled/embedded panes — race it against a short timer
+    // so readiness never waits on a paint tick that isn't coming. promote()'s
+    // `done` guard makes the double fire harmless.
+    const promoteNextPaint = (why: string) => {
+      const fallback = setTimeout(() => promote(`${why}+timer`), 150);
+      requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(fallback); promote(why); }));
+    };
+    let tries = 0;
+    let unlisten = () => {};
+    const arm = () => {
+      if (done) return;
+      const p = backRef.current;
+      if (!p) {
+        if (++tries < 120) setTimeout(arm, 25);
+        else dbg('backRef never bound');
+        return;
+      }
+      dbg(`arm: seeking back player to ${lastFrameRef.current}`);
+      p.seekTo(Math.min(lastFrameRef.current, totalFrames - 1));
+      // A paused player seeked to its CURRENT frame emits no frameupdate —
+      // listen for seeked too, and let the content poll below catch the rest.
+      const onFrame = () => { unlisten(); dbg('signal frameupdate'); promoteNextPaint('frameupdate'); };
+      const onSeek = () => { unlisten(); dbg('signal seeked'); promoteNextPaint('seeked'); };
+      p.addEventListener('frameupdate', onFrame as never);
+      p.addEventListener('seeked', onSeek as never);
+      unlisten = () => {
+        p.removeEventListener('frameupdate', onFrame as never);
+        p.removeEventListener('seeked', onSeek as never);
+      };
+    };
+    arm();
+    // Readiness poll: the hidden player's scene content exists in the DOM.
+    // Event-independent — works even if this Player build emits neither event.
+    const poll = setInterval(() => {
+      if (done) return;
+      const hidden = [...(stageRef.current?.children || [])].find(
+        (c): c is HTMLElement => c.tagName === 'DIV' && (c as HTMLElement).style.opacity === '0'
+      );
+      if (hidden && hidden.querySelector('[data-baz]')) {
+        unlisten();
+        clearInterval(poll);
+        dbg('signal content-poll');
+        promoteNextPaint('content-poll');
+      }
+    }, 80);
+    const safety = setTimeout(() => promote('safety'), 900); // never deadlock on a silent player
+    return () => { done = true; unlisten(); clearInterval(poll); clearTimeout(safety); };
+  }, [players.back, totalFrames]);
+
+  useEffect(() => {
+    // UI listeners + playback continuity live on whichever player is front.
     const p = playerRef.current;
     if (!p) return;
     const onFrame = (e: { detail: { frame: number } }) => {
@@ -183,23 +260,13 @@ function App() {
     p.addEventListener('frameupdate', onFrame as never);
     p.addEventListener('play', onPlay);
     p.addEventListener('pause', onPause);
+    if (wasPlayingRef.current && !p.isPlaying()) p.play();
     return () => {
       p.removeEventListener('frameupdate', onFrame as never);
       p.removeEventListener('play', onPlay);
       p.removeEventListener('pause', onPause);
     };
-  }, [compiled]);
-
-  useEffect(() => {
-    // After a remount: restore position (and motion) from before the swap.
-    const p = playerRef.current;
-    if (!p) return;
-    const f = Math.min(lastFrameRef.current, totalFrames - 1);
-    p.seekTo(f);
-    if (wasPlayingRef.current) p.play();
-    // The DOM was rebuilt — any selected element reference is dead.
-    setSelection(null);
-  }, [compiled, totalFrames]);
+  }, [players.front]);
 
   // ---- write paths (shared by direct edits and undo/redo) -------------------
   const commitCode = useCallback(async (sceneId: string, code: string): Promise<string | null> => {
@@ -350,7 +417,8 @@ function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (/^(INPUT|TEXTAREA)$/.test((document.activeElement as HTMLElement)?.tagName || '')) return;
+      const ae = document.activeElement as HTMLElement | null;
+      if (/^(INPUT|TEXTAREA)$/.test(ae?.tagName || '') || ae?.isContentEditable) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         if (e.shiftKey) void redo(); else void undo();
@@ -533,6 +601,133 @@ function App() {
     [tsxById, compositionScale, commitCode, pushUndo]
   );
 
+  // ---- inline text editing (double-click) -----------------------------------
+  const [editingText, setEditingText] = useState<{ loc: string; el: HTMLElement; original: string } | null>(null);
+  const editingRef = useRef<typeof editingText>(null);
+  useEffect(() => { editingRef.current = editingText; }, [editingText]);
+  const tsxRef = useRef(tsxById);
+  useEffect(() => { tsxRef.current = tsxById; }, [tsxById]);
+
+  const finishTextEdit = useCallback(
+    async (commitIt: boolean) => {
+      const ed = editingRef.current;
+      if (!ed) return;
+      const newText = ed.el.textContent ?? '';
+      ed.el.removeAttribute('contenteditable');
+      ed.el.classList.remove('baz-editing');
+      setEditingText(null);
+      if (!commitIt || newText === ed.original) {
+        ed.el.textContent = ed.original;
+        return;
+      }
+      const [sceneId, l, c] = ed.loc.split(':');
+      const current = tsxRef.current[sceneId];
+      const patched = current ? applyTextEdit(current, Number(l), Number(c), newText) : null;
+      if (!patched) {
+        ed.el.textContent = ed.original;
+        setStatus('⚠ that text is generated by code — change it with a prompt instead');
+        return;
+      }
+      setTsxById((m) => ({ ...m, [sceneId]: patched }));
+      setStatus('saving text…');
+      const err = await commitCode(sceneId, patched).catch((e: Error) => e.message);
+      if (err) {
+        setTsxById((m) => ({ ...m, [sceneId]: current }));
+        setStatus(`✗ reverted: ${String(err).slice(0, 110)}`);
+        return;
+      }
+      pushUndo({ kind: 'code', sceneId, before: current, after: patched });
+      setStatus(`✓ text saved — ⌘Z to undo`);
+    },
+    [commitCode, pushUndo]
+  );
+
+  const onDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (editingRef.current) return;
+      // Text sits under overlapping containers in collage scenes — scan the
+      // whole hit stack for the first tagged element that is a TEXT LEAF,
+      // instead of taking whichever container is topmost (pickAt's rule).
+      const stack = document.elementsFromPoint(e.clientX, e.clientY) as HTMLElement[];
+      let deep: Picked | null = null;
+      for (const raw of stack) {
+        if (raw.closest('.hit-overlay')) continue;
+        let el2: HTMLElement | null = raw;
+        while (el2 && el2 !== stageRef.current) {
+          const loc = el2.getAttribute('data-baz');
+          if (loc && el2.children.length === 0 && (el2.textContent || '').trim()) {
+            deep = { loc, sceneId: loc.split(':')[0], el: el2, tagName: el2.tagName.toLowerCase() };
+            break;
+          }
+          el2 = el2.parentElement;
+        }
+        if (deep) break;
+      }
+      // Whether the SOURCE is editable is decided by the patcher at commit.
+      if (!deep) return;
+      playerRef.current?.pause();
+      setSelection(null);
+      const el = deep.el;
+      setEditingText({ loc: deep.loc, el, original: el.textContent || '' });
+      el.setAttribute('contenteditable', 'plaintext-only');
+      if (!el.isContentEditable) el.setAttribute('contenteditable', 'true'); // fallback
+      el.classList.add('baz-editing');
+      el.focus();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    },
+    [pickAt]
+  );
+
+  useEffect(() => {
+    if (!editingText) return;
+    const el = editingText.el;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void finishTextEdit(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); void finishTextEdit(false); }
+      e.stopPropagation();
+    };
+    const onOutside = (e: PointerEvent) => {
+      if (!el.contains(e.target as Node)) void finishTextEdit(true);
+    };
+    el.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onOutside, true);
+    return () => {
+      el.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onOutside, true);
+    };
+  }, [editingText, finishTextEdit]);
+
+  // ---- corner-handle scaling ------------------------------------------------
+  const commitScale = useCallback(
+    async (factor: number) => {
+      const act = selectionRef.current?.chain[selectionRef.current.index];
+      if (!act) return;
+      const [sceneId, l, c] = act.loc.split(':');
+      const current = tsxRef.current[sceneId];
+      const patched = current ? applyTransform(current, Number(l), Number(c), 0, 0, factor) : null;
+      if (!patched) {
+        setStatus(`⚠ couldn't scale <${act.tagName}> mechanically — send it as a note instead`);
+        return;
+      }
+      setTsxById((m) => ({ ...m, [sceneId]: patched }));
+      setStatus(`saving scale ×${factor.toFixed(2)}…`);
+      const err = await commitCode(sceneId, patched).catch((e: Error) => e.message);
+      if (err) {
+        setTsxById((m) => ({ ...m, [sceneId]: current }));
+        setStatus(`✗ reverted: ${String(err).slice(0, 110)}`);
+        return;
+      }
+      pushUndo({ kind: 'code', sceneId, before: current, after: patched });
+      setStatus(`✓ scaled <${act.tagName}> ×${factor.toFixed(2)} — ⌘Z to undo`);
+    },
+    [commitCode, pushUndo]
+  );
+
+
   // ---- render ---------------------------------------------------------------
   if (loadErr) return <div className="pad err">Failed to load project: {loadErr}</div>;
   if (!snap) return <div className="pad dim">Loading project…</div>;
@@ -544,27 +739,10 @@ function App() {
 
   return (
     <div className="app">
-      <div className="side">
-        <div className="brand">baz <span>editor</span></div>
-        <div className="proj">{snap.project.title}</div>
-        {snap.scenes.map((s) => (
-          <button
-            key={s.id}
-            className={
-              'scene' +
-              (active?.sceneId === s.id ? ' on' : '') +
-              (s.hasCode ? '' : ' nocode')
-            }
-            onClick={() => playerRef.current?.seekTo(starts.get(s.id) ?? 0)}
-            title={`seek to ${timecode(starts.get(s.id) ?? 0)}`}
-          >
-            <i>t{s.track}</i> {s.name}
-          </button>
-        ))}
-      </div>
-
       <div className="main">
         <div className="bar">
+          <span className="brandmini">baz</span>
+          <span className="projmini">{snap.project.title}</span>
           {selection && active ? (
             <span className="crumbs">
               <b>{selectedScene?.name ?? active.sceneId.slice(0, 8)}</b>
@@ -593,28 +771,46 @@ function App() {
 
         <div className="stage" ref={stageRef}>
           {compiled?.error && <div className="pad err">Compile error: {compiled.error}</div>}
-          {lazyComponent && (
-            <Player
-              key={compiled!.blobUrl}
-              ref={playerRef}
-              lazyComponent={lazyComponent as never}
-              durationInFrames={totalFrames}
-              compositionWidth={W}
-              compositionHeight={H}
-              fps={FPS}
-              controls={false}
-              loop
-              style={{ width: '100%', height: '100%' }}
-              acknowledgeRemotionLicense
-            />
-          )}
+          {[players.front, players.back].filter(Boolean).map((pb) => {
+            const isFront = pb!.id === players.front?.id;
+            return (
+              <Player
+                key={pb!.id}
+                ref={isFront ? playerRef : backRef}
+                lazyComponent={pb!.lazy as never}
+                durationInFrames={totalFrames}
+                compositionWidth={W}
+                compositionHeight={H}
+                fps={FPS}
+                controls={false}
+                loop
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  opacity: isFront ? 1 : 0,
+                  // ONLY the hidden back player is hit-test-invisible.
+                  // pointer-events:none on the front one would make
+                  // elementsFromPoint skip the whole composition subtree,
+                  // killing selection, dragging and text editing at once.
+                  // (The overlay above the player eats real clicks anyway.)
+                  pointerEvents: isFront ? 'auto' : 'none',
+                }}
+                acknowledgeRemotionLicense
+              />
+            );
+          })}
           <div
-            className="hit-overlay"
+            className={'hit-overlay' + (editingText ? ' pass' : '')}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
+            onDoubleClick={onDoubleClick}
           />
-          {active && <SelectionBox target={active.el} stage={stageRef.current} />}
+          {active && !editingText && (
+            <SelectionBox target={active.el} stage={stageRef.current} onScale={commitScale} />
+          )}
         </div>
 
         <div className="transport">
@@ -818,40 +1014,66 @@ function Timeline(props: {
           <span className="tl-tracklabel">t{t}</span>
         </div>
       ))}
-      {scenes.map((s) => {
-        const g = ghost?.sceneId === s.id ? ghost : null;
-        const start = g ? g.start : starts.get(s.id) ?? 0;
-        const dur = g ? g.duration : s.durationFrames || 150;
-        const track = g ? g.track : s.track;
-        const row = tracksDesc.indexOf(track);
-        if (row < 0) return null;
-        return (
-          <div
-            key={s.id}
-            data-clip={s.id}
-            className={'tl-clip' + (s.id === activeSceneId ? ' on' : '') + (g ? ' ghosting' : '')}
-            style={{
-              left: `${(start / totalFrames) * 100}%`,
-              width: `${(dur / totalFrames) * 100}%`,
-              top: RULER_H + row * ROW_H + 3,
-              height: ROW_H - 6,
-            }}
-            title={`${s.name} · ${timecode(start)} → ${timecode(start + dur)}${track === 0 ? ' · drag = reorder' : ''}`}
-          >
-            <i className="hL" />
-            <span className="tl-label">{s.name}</span>
-            <i className="hR" />
-          </div>
-        );
-      })}
+      {(() => {
+        // While a track-0 clip is being dragged along its row, the OTHER
+        // track-0 clips part around the would-be insertion point — the gap
+        // opening up is the "you can drop here" feedback. CSS transitions on
+        // left make them glide rather than jump.
+        let preview: Map<string, number> | null = null;
+        if (ghost) {
+          const dragged = scenes.find((sc) => sc.id === ghost.sceneId);
+          if (dragged && dragged.track === 0 && ghost.track === 0) {
+            const others = scenes
+              .filter((sc) => sc.track === 0 && sc.id !== ghost.sceneId)
+              .sort((a, b) => (starts.get(a.id) ?? 0) - (starts.get(b.id) ?? 0));
+            const centre = ghost.start + ghost.duration / 2;
+            preview = new Map();
+            let acc = 0;
+            let inserted = false;
+            for (const sc of others) {
+              const dur = sc.durationFrames || 150;
+              if (!inserted && centre <= acc + dur / 2) { acc += ghost.duration; inserted = true; }
+              preview.set(sc.id, acc);
+              acc += dur;
+            }
+          }
+        }
+        return scenes.map((s) => {
+          const g = ghost?.sceneId === s.id ? ghost : null;
+          const start = g ? g.start : preview?.get(s.id) ?? starts.get(s.id) ?? 0;
+          const dur = g ? g.duration : s.durationFrames || 150;
+          const track = g ? g.track : s.track;
+          const row = tracksDesc.indexOf(track);
+          if (row < 0) return null;
+          return (
+            <div
+              key={s.id}
+              data-clip={s.id}
+              className={'tl-clip' + (s.id === activeSceneId ? ' on' : '') + (g ? ' ghosting' : '')}
+              style={{
+                left: `calc(${(start / totalFrames) * 100}% + 2px)`,
+                width: `calc(${(dur / totalFrames) * 100}% - 4px)`,
+                top: RULER_H + row * ROW_H + 3,
+                height: ROW_H - 6,
+              }}
+              title={`${s.name} · ${timecode(start)} → ${timecode(start + dur)}${track === 0 ? ' · drag = reorder' : ''}`}
+            >
+              <i className="hL" />
+              <span className="tl-label">{s.name}</span>
+              <i className="hR" />
+            </div>
+          );
+        });
+      })()}
       <div className="tl-head" style={{ left: `${(frame / Math.max(1, totalFrames - 1)) * 100}%` }} />
     </div>
   );
 }
 
-/** Outline that follows the selected element's rect. */
-function SelectionBox({ target, stage }: { target: HTMLElement; stage: HTMLDivElement | null }) {
+/** Outline + corner scale handles that follow the selected element's rect. */
+function SelectionBox({ target, stage, onScale }: { target: HTMLElement; stage: HTMLDivElement | null; onScale: (f: number) => void }) {
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const drag = useRef<{ ax: number; ay: number; d0: number; orig: string; f: number } | null>(null);
   useEffect(() => {
     let raf = 0;
     const tick = () => {
@@ -864,11 +1086,54 @@ function SelectionBox({ target, stage }: { target: HTMLElement; stage: HTMLDivEl
   }, [target]);
   if (!rect || !stage) return null;
   const s = stage.getBoundingClientRect();
+
+  const startScale = (e: React.PointerEvent, corner: string) => {
+    e.stopPropagation();
+    const r = target.getBoundingClientRect();
+    // Anchor = the OPPOSITE corner; dragging changes the diagonal ratio.
+    const ax = corner.includes('w') ? r.right : r.left;
+    const ay = corner.includes('n') ? r.bottom : r.top;
+    drag.current = { ax, ay, d0: Math.max(8, Math.hypot(e.clientX - ax, e.clientY - ay)), orig: target.style.transform || '', f: 1 };
+    try { (e.target as HTMLElement).setPointerCapture(e.pointerId); } catch { /* synthetic */ }
+  };
+  const moveScale = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    d.f = Math.max(0.05, Math.hypot(e.clientX - d.ax, e.clientY - d.ay) / d.d0);
+    // Live preview only — the patch owns the real value after commit.
+    target.style.transform = `${d.orig} scale(${d.f})`.trim();
+  };
+  const endScale = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d) return;
+    target.style.transform = d.orig;
+    if (Math.abs(d.f - 1) > 0.01) onScale(Math.round(d.f * 1000) / 1000);
+  };
+
+  const corners: Array<[string, number, number, string]> = [
+    ['nw', rect.left - s.left, rect.top - s.top, 'nwse-resize'],
+    ['ne', rect.right - s.left, rect.top - s.top, 'nesw-resize'],
+    ['sw', rect.left - s.left, rect.bottom - s.top, 'nesw-resize'],
+    ['se', rect.right - s.left, rect.bottom - s.top, 'nwse-resize'],
+  ];
   return (
-    <div
-      className="selbox"
-      style={{ left: rect.left - s.left, top: rect.top - s.top, width: rect.width, height: rect.height }}
-    />
+    <>
+      <div
+        className="selbox"
+        style={{ left: rect.left - s.left, top: rect.top - s.top, width: rect.width, height: rect.height }}
+      />
+      {corners.map(([c, x, y, cursor]) => (
+        <div
+          key={c}
+          className="selhandle"
+          style={{ left: x - 5, top: y - 5, cursor }}
+          onPointerDown={(e) => startScale(e, c)}
+          onPointerMove={moveScale}
+          onPointerUp={endScale}
+        />
+      ))}
+    </>
   );
 }
 

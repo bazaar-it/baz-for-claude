@@ -25,6 +25,13 @@
   .stage { position: relative; width: 100%; max-height: calc(100% - 40px); background: #000; border-radius: 8px; overflow: hidden; align-self: center; }
   .hit-overlay { position: absolute; inset: 0; cursor: crosshair; z-index: 10; }
   .selbox { position: absolute; border: 1.5px solid #5FD394; box-shadow: 0 0 0 1px rgba(0,0,0,.6); pointer-events: none; z-index: 11; }
+  .transport { display: flex; align-items: center; gap: 12px; }
+  .play { width: 44px; height: 32px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.16); color: #E8E4DA; border-radius: 7px; font: inherit; cursor: pointer; }
+  .play:hover { background: rgba(255,255,255,.15); }
+  .strip { position: relative; flex: 1; height: 22px; background: rgba(255,255,255,.07); border-radius: 999px; overflow: hidden; cursor: pointer; touch-action: none; }
+  .seg { position: absolute; top: 0; bottom: 0; background: rgba(123,229,164,.13); border-right: 1px solid rgba(0,0,0,.5); }
+  .head { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #5FD394; box-shadow: 0 0 6px #5FD394; }
+  .tc { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: 15px; }
   .pad { padding: 30px; }
   .err { color: #ff8a8a; font-family: monospace; }
   .dim { color: #8A8377; }

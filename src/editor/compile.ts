@@ -108,7 +108,86 @@ export function scrub(tsx: string): { code: string; componentName: string | null
   return { code, componentName };
 }
 
+export interface CompScene {
+  id: string;
+  tsx: string;
+  start: number;
+  duration: number;
+  track: number;
+}
+
+/**
+ * Compile ALL scenes into one master composition module (the bazaar-vid
+ * buildLayeredModule shape): each scene namespace-wrapped in an IIFE with its
+ * own error boundary, mounted in a Sequence at its start/duration, stacked by
+ * track (zIndex = track*10+idx). Sequence resets useCurrentFrame() to 0 inside,
+ * which is exactly what generated scenes assume.
+ */
+export function compileComposition(scenes: CompScene[]): CompiledScene {
+  try {
+    const ordered = [...scenes].sort((a, b) => a.track - b.track || a.start - b.start);
+    const parts: string[] = ['const React = window.React;'];
+    const mounts: string[] = [];
+
+    ordered.forEach((s, idx) => {
+      const tagged = tagJsx(s.tsx, s.id);
+      const { code: scrubbed, componentName } = scrub(tagged);
+      const ns = `__Scene_${s.id.slice(0, 8).replace(/-/g, '')}_${idx}`;
+      if (!componentName) {
+        // Un-compilable scene: mount an inline error card instead of dying.
+        parts.push(`var ${ns} = function(){ return React.createElement(window.Remotion.AbsoluteFill,
+          { style: { background: '#1a0000', color: '#ff8a8a', fontFamily: 'monospace', fontSize: 26, padding: 50 } },
+          'Scene has no default component'); };`);
+      } else {
+        // var (not const): a double emission must not throw.
+        parts.push(`var ${ns} = (function(){\n${scrubbed}\nreturn ${componentName};\n})();`);
+      }
+      parts.push(`class ${ns}_B extends React.Component {
+        constructor(p){ super(p); this.state = { err: null }; }
+        static getDerivedStateFromError(err){ return { err }; }
+        render(){
+          if (this.state.err) return React.createElement(window.Remotion.AbsoluteFill,
+            { style: { background: 'rgba(26,0,0,.9)', color: '#ff8a8a', fontFamily: 'monospace', fontSize: 24, padding: 40 } },
+            'Scene error: ' + String(this.state.err && this.state.err.message));
+          return React.createElement(${ns});
+        }
+      }`);
+      mounts.push(
+        `React.createElement(window.Remotion.Sequence, { from: ${s.start}, durationInFrames: ${Math.max(1, s.duration)}, key: '${s.id}' },
+           React.createElement(window.Remotion.AbsoluteFill, { style: { zIndex: ${s.track * 10 + idx} } },
+             React.createElement(${ns}_B)))`
+      );
+    });
+
+    parts.push(
+      `export default function __BazComposition(){
+         return React.createElement(window.Remotion.AbsoluteFill, null, ${mounts.join(',\n')});
+       }`
+    );
+
+    const js = transform(parts.join('\n'), {
+      transforms: ['typescript', 'jsx'],
+      jsxRuntime: 'classic',
+      production: true,
+    }).code;
+
+    const blobUrl = URL.createObjectURL(new Blob([js], { type: 'application/javascript' }));
+    revokeLater(blobUrl);
+    return { blobUrl, componentName: '__BazComposition' };
+  } catch (err) {
+    return { blobUrl: '', componentName: '', error: (err as Error).message };
+  }
+}
+
 const revokeQueue: string[] = [];
+
+function revokeLater(url: string): void {
+  revokeQueue.push(url);
+  while (revokeQueue.length > 4) {
+    const old = revokeQueue.shift();
+    if (old) setTimeout(() => URL.revokeObjectURL(old), 5000);
+  }
+}
 
 /**
  * Compile one scene into a playable blob-ESM module.

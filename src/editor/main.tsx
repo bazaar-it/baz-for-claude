@@ -11,7 +11,7 @@ import { createRoot } from 'react-dom/client';
 import { Player, type PlayerRef } from '@remotion/player';
 import { installGlobals } from './globals';
 import { compileComposition, type CompScene } from './compile';
-import { applyTranslate, applyTransform, applyTextEdit } from './patch';
+import { applyTranslate, applyTransform, applyTextEdit, applyTrimIn, getTrimIn } from './patch';
 
 installGlobals();
 
@@ -86,10 +86,43 @@ interface Timing { start?: number; track?: number; duration?: number }
  * through the SAME write paths (set-code / positions / reorder). Cmd+Z pops
  * one; Cmd+Shift+Z replays it.
  */
+/**
+ * Structural edits (split / duplicate / delete / paste / trim) are several
+ * writes that must undo as ONE gesture — a batch entry replays its ops in
+ * order, and their inverses in reverse. Re-creating a deleted scene mints a
+ * NEW id; the op records it back into itself so a later redo targets the
+ * scene that actually exists (`placeAfter` keeps track-0 position).
+ */
+type PrimOp =
+  | { op: 'code'; sceneId: string; before: string; after: string }
+  | { op: 'timing'; updates: Array<{ sceneId: string; before: Timing; after: Timing }> }
+  | { op: 'reorder'; before: string[]; after: string[] }
+  | {
+      op: 'create';
+      sceneId: string; // updated in place on every (re)create
+      code: string;
+      name: string;
+      track: number;
+      start: number;
+      duration: number;
+      placeAfter: string | null; // track 0: insert after this scene (null = front)
+    }
+  | {
+      op: 'delete';
+      sceneId: string;
+      code: string;
+      name: string;
+      track: number;
+      start: number;
+      duration: number;
+      placeAfter: string | null;
+    };
+
 type UndoEntry =
   | { kind: 'code'; sceneId: string; before: string; after: string }
   | { kind: 'timing'; updates: Array<{ sceneId: string; before: Timing; after: Timing }> }
-  | { kind: 'reorder'; before: string[]; after: string[] };
+  | { kind: 'reorder'; before: string[]; after: string[] }
+  | { kind: 'batch'; label: string; ops: PrimOp[] };
 
 function App() {
   const [snap, setSnap] = useState<ProjectSnapshot | null>(null);
@@ -136,6 +169,13 @@ function App() {
 
   // ---- composition ----------------------------------------------------------
   const starts = useMemo(() => (snap ? computeStarts(snap.scenes) : new Map()), [snap]);
+
+  /** Frames already trimmed off each scene's start (drives left-edge un-trim range). */
+  const trims = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const [id, code] of Object.entries(tsxById)) m.set(id, getTrimIn(code));
+    return m;
+  }, [tsxById]);
 
   const totalFrames = useMemo(() => {
     if (!snap) return 1;
@@ -313,6 +353,78 @@ function App() {
     return res;
   }, []);
 
+  const snapRef = useRef<ProjectSnapshot | null>(null);
+  useEffect(() => { snapRef.current = snap; }, [snap]);
+
+  /** Re-pull the whole project — the truth source after structural edits. */
+  const refreshSnap = useCallback(async () => {
+    const d = await (await fetch('/api/editor/project')).json();
+    if (d.error) throw new Error(d.error);
+    setSnap(d);
+    const code: Record<string, string> = {};
+    for (const s of d.scenes as SceneInfo[]) if (s.tsxCode) code[s.id] = s.tsxCode;
+    setTsxById(code);
+    return d as ProjectSnapshot;
+  }, []);
+
+  const createSceneApi = useCallback(
+    async (p: { code: string; name: string; duration: number; track: number; start: number }) => {
+      const r = await fetch('/api/editor/scene-create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(p),
+      });
+      const res = await r.json();
+      if (!r.ok) throw new Error(res.error || 'create failed');
+      return res.scene as SceneInfo;
+    },
+    []
+  );
+
+  const deleteSceneApi = useCallback(async (sceneId: string) => {
+    const r = await fetch('/api/editor/scene-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sceneId }),
+    });
+    const res = await r.json();
+    if (!r.ok) throw new Error(res.error || 'delete failed');
+  }, []);
+
+  /** Full playback-order id list with track-0 reordered to place `id` after `placeAfter`. */
+  const orderWithPlacement = useCallback((scenes: SceneInfo[], id: string, placeAfter: string | null): string[] => {
+    const t0 = scenes
+      .filter((s) => s.track === 0 && s.id !== id)
+      .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+      .map((s) => s.id);
+    const at = placeAfter ? t0.indexOf(placeAfter) + 1 : 0;
+    t0.splice(at < 0 ? t0.length : at, 0, id);
+    return [...t0, ...scenes.filter((s) => s.track !== 0 && s.id !== id).map((s) => s.id)];
+  }, []);
+
+  /**
+   * Create a scene and land it EXACTLY where asked. `scenes create` treats
+   * track+start as a literal rectangle and auto-places to a free track on
+   * overlap (a track-0 create at start 0 ends up on track 2) — so for track 0
+   * the create is followed by an explicit positions write pinning the track,
+   * then a reorder placing it in the row.
+   */
+  const createPlaced = useCallback(
+    async (
+      p: { code: string; name: string; duration: number; track: number; start: number },
+      placeAfter: string | null
+    ): Promise<SceneInfo> => {
+      const made = await createSceneApi(p);
+      if (p.track === 0) {
+        await commitPositions([{ sceneId: made.id, track: 0 }]);
+        const cur = await refreshSnap();
+        await commitReorder(orderWithPlacement(cur.scenes, made.id, placeAfter));
+      }
+      return made;
+    },
+    [createSceneApi, commitPositions, commitReorder, refreshSnap, orderWithPlacement]
+  );
+
   const applyLocalTiming = useCallback((updates: Array<{ sceneId: string } & Timing>) => {
     setSnap((prev) => {
       if (!prev) return prev;
@@ -343,25 +455,84 @@ function App() {
     });
   }, []);
 
-  /** Run one ledger entry in the given direction through the real write paths. */
-  const applyEntry = useCallback(
-    async (e: UndoEntry, dir: 'undo' | 'redo') => {
-      if (e.kind === 'code') {
-        const code = dir === 'undo' ? e.before : e.after;
-        const err = await commitCode(e.sceneId, code);
+  /**
+   * Undoing a delete (or redoing a create) re-creates the scene under a FRESH
+   * id — every other ledger entry still referencing the old id would hit
+   * "Scene not found" on later undo/redo. Heal the whole ledger in place.
+   */
+  const remapSceneId = useCallback((from: string, to: string) => {
+    const swapIds = (ids: string[]) => ids.map((x) => (x === from ? to : x));
+    const fixOp = (op: PrimOp) => {
+      if (op.op === 'code' && op.sceneId === from) op.sceneId = to;
+      else if (op.op === 'timing') op.updates.forEach((u) => { if (u.sceneId === from) u.sceneId = to; });
+      else if (op.op === 'reorder') { op.before = swapIds(op.before); op.after = swapIds(op.after); }
+      else if (op.op === 'create' || op.op === 'delete') {
+        if (op.sceneId === from) op.sceneId = to;
+        if (op.placeAfter === from) op.placeAfter = to;
+      }
+    };
+    const fix = (e: UndoEntry) => {
+      if (e.kind === 'code' && e.sceneId === from) e.sceneId = to;
+      else if (e.kind === 'timing') e.updates.forEach((u) => { if (u.sceneId === from) u.sceneId = to; });
+      else if (e.kind === 'reorder') { e.before = swapIds(e.before); e.after = swapIds(e.after); }
+      else if (e.kind === 'batch') e.ops.forEach(fixOp);
+    };
+    undoRef.current.forEach(fix);
+    redoRef.current.forEach(fix);
+  }, []);
+
+  /** Run one primitive op in the given direction through the real write paths. */
+  const applyPrim = useCallback(
+    async (op: PrimOp, dir: 'undo' | 'redo') => {
+      if (op.op === 'code') {
+        const code = dir === 'undo' ? op.before : op.after;
+        const err = await commitCode(op.sceneId, code);
         if (err) throw new Error(err);
-        setTsxById((m) => ({ ...m, [e.sceneId]: code }));
-      } else if (e.kind === 'timing') {
-        const updates = e.updates.map((u) => ({ sceneId: u.sceneId, ...(dir === 'undo' ? u.before : u.after) }));
+        setTsxById((m) => ({ ...m, [op.sceneId]: code }));
+        return;
+      }
+      if (op.op === 'timing') {
+        const updates = op.updates.map((u) => ({ sceneId: u.sceneId, ...(dir === 'undo' ? u.before : u.after) }));
         await commitPositions(updates);
         applyLocalTiming(updates);
-      } else {
-        const ids = dir === 'undo' ? e.before : e.after;
+        return;
+      }
+      if (op.op === 'reorder') {
+        const ids = dir === 'undo' ? op.before : op.after;
         await commitReorder(ids);
         applyLocalOrder(ids);
+        return;
       }
+      // create / delete are inverses of each other; both end in a full
+      // refresh because ids, orders and derived starts all shift.
+      const bringBack = (op.op === 'create' && dir === 'redo') || (op.op === 'delete' && dir === 'undo');
+      if (bringBack) {
+        const made = await createPlaced(
+          { code: op.code, name: op.name, duration: op.duration, track: op.track, start: op.start },
+          op.placeAfter
+        );
+        remapSceneId(op.sceneId, made.id); // heal the whole ledger, this op included
+      } else {
+        await deleteSceneApi(op.sceneId);
+      }
+      await refreshSnap();
     },
-    [commitCode, commitPositions, applyLocalTiming, applyLocalOrder, commitReorder]
+    [commitCode, commitPositions, applyLocalTiming, applyLocalOrder, commitReorder, createPlaced, deleteSceneApi, refreshSnap, remapSceneId]
+  );
+
+  /** Run one ledger entry in the given direction. Batches run ops in order; undo runs their inverses in reverse. */
+  const applyEntry = useCallback(
+    async (e: UndoEntry, dir: 'undo' | 'redo') => {
+      if (e.kind === 'batch') {
+        const ops = dir === 'undo' ? [...e.ops].reverse() : e.ops;
+        for (const op of ops) await applyPrim(op, dir);
+        return;
+      }
+      if (e.kind === 'code') return applyPrim({ op: 'code', sceneId: e.sceneId, before: e.before, after: e.after }, dir);
+      if (e.kind === 'timing') return applyPrim({ op: 'timing', updates: e.updates }, dir);
+      return applyPrim({ op: 'reorder', before: e.before, after: e.after }, dir);
+    },
+    [applyPrim]
   );
 
   const busyRef = useRef(false);
@@ -374,7 +545,7 @@ function App() {
       await applyEntry(e, 'undo');
       undoRef.current.pop();
       redoRef.current.push(e);
-      setStatus(`↩ undid ${e.kind === 'code' ? 'element edit' : e.kind}`);
+      setStatus(`↩ undid ${e.kind === 'code' ? 'element edit' : e.kind === 'batch' ? e.label : e.kind}`);
     } catch (err) {
       setStatus(`✗ undo failed: ${(err as Error).message}`);
     } finally {
@@ -392,7 +563,7 @@ function App() {
       await applyEntry(e, 'redo');
       redoRef.current.pop();
       undoRef.current.push(e);
-      setStatus(`↪ redid ${e.kind === 'code' ? 'element edit' : e.kind}`);
+      setStatus(`↪ redid ${e.kind === 'code' ? 'element edit' : e.kind === 'batch' ? e.label : e.kind}`);
     } catch (err) {
       setStatus(`✗ redo failed: ${(err as Error).message}`);
     } finally {
@@ -407,6 +578,159 @@ function App() {
     syncHistory();
   }, []);
 
+  // ---- structural ops (CapCut keyboard grammar) -----------------------------
+  // ⌘D duplicate · ⌘B split at playhead · ⌫ delete · ⌘C/⌘V copy/paste.
+  // All of them are batch ledger entries so one ⌘Z reverts the whole gesture.
+  const [timelineSel, setTimelineSel] = useState<string | null>(null);
+  const timelineSelRef = useRef<string | null>(null);
+  useEffect(() => { timelineSelRef.current = timelineSel; }, [timelineSel]);
+  const clipboardRef = useRef<{ code: string; name: string; duration: number; track: number } | null>(null);
+
+  /** The scene keyboard ops act on: explicit timeline selection, else the canvas selection's scene. */
+  const kbScene = useCallback((): SceneInfo | null => {
+    const id = timelineSelRef.current ?? selectionRef.current?.chain[selectionRef.current.index]?.sceneId;
+    return (id && snapRef.current?.scenes.find((s) => s.id === id)) || null;
+  }, []);
+
+  /** Track-0 neighbour to insert after, for placing a new scene next to `s`. */
+  const t0PlaceAfter = useCallback((s: SceneInfo): string | null => (s.track === 0 ? s.id : null), []);
+
+  const structuralBusy = useRef(false);
+  const runStructural = useCallback(
+    async (label: string, build: () => Promise<PrimOp[]>) => {
+      if (structuralBusy.current) return;
+      structuralBusy.current = true;
+      setStatus(`${label}…`);
+      try {
+        const ops = await build();
+        pushUndo({ kind: 'batch', label, ops });
+        setStatus(`✓ ${label} — ⌘Z to undo`);
+      } catch (err) {
+        setStatus(`✗ ${label} failed: ${(err as Error).message}`);
+        // state may be part-written — re-pull the truth
+        refreshSnap().catch(() => {});
+      } finally {
+        structuralBusy.current = false;
+      }
+    },
+    [pushUndo, refreshSnap]
+  );
+
+  const duplicateScene = useCallback(() => {
+    const s = kbScene();
+    if (!s) { setStatus('select a clip first'); return; }
+    const code = tsxRef.current[s.id];
+    if (!code) { setStatus('scene has no code to duplicate'); return; }
+    void runStructural('duplicate', async () => {
+      const dur = s.durationFrames || 150;
+      const start = s.track === 0 ? 0 : (starts.get(s.id) ?? 0) + dur; // right after, same track
+      const made = await createPlaced(
+        { code, name: `${s.name} copy`, duration: dur, track: s.track, start },
+        t0PlaceAfter(s)
+      );
+      await refreshSnap();
+      setTimelineSel(made.id);
+      return [{
+        op: 'create', sceneId: made.id, code, name: `${s.name} copy`,
+        track: s.track, start, duration: dur, placeAfter: t0PlaceAfter(s),
+      }];
+    });
+  }, [kbScene, runStructural, createPlaced, refreshSnap, starts, t0PlaceAfter]);
+
+  const splitScene = useCallback(() => {
+    const s = kbScene();
+    if (!s) { setStatus('select a clip first'); return; }
+    const code = tsxRef.current[s.id];
+    if (!code) { setStatus('scene has no code to split'); return; }
+    const dur = s.durationFrames || 150;
+    const sceneStart = starts.get(s.id) ?? 0;
+    const t = Math.round(lastFrameRef.current - sceneStart);
+    if (t < 5 || t > dur - 5) { setStatus('move the playhead inside the clip to split'); return; }
+    const part2Code = applyTrimIn(code, getTrimIn(code) + t);
+    if (!part2Code) { setStatus("⚠ can't split this scene — its component shape is too unusual"); return; }
+    void runStructural('split', async () => {
+      const part2Start = s.track === 0 ? 0 : sceneStart + t;
+      const made = await createPlaced(
+        { code: part2Code, name: s.name, duration: dur - t, track: s.track, start: part2Start },
+        t0PlaceAfter(s)
+      );
+      await commitPositions([{ sceneId: s.id, duration: t, track: s.track }]);
+      await refreshSnap();
+      return [
+        {
+          op: 'create', sceneId: made.id, code: part2Code, name: s.name,
+          track: s.track, start: part2Start, duration: dur - t, placeAfter: t0PlaceAfter(s),
+        },
+        { op: 'timing', updates: [{ sceneId: s.id, before: { duration: dur, track: s.track }, after: { duration: t, track: s.track } }] },
+      ];
+    });
+  }, [kbScene, runStructural, createPlaced, refreshSnap, commitPositions, starts, t0PlaceAfter]);
+
+  const deleteSelected = useCallback(() => {
+    const s = kbScene();
+    if (!s) { setStatus('select a clip first'); return; }
+    const code = tsxRef.current[s.id] ?? '';
+    // remember the track-0 neighbour BEFORE the delete, for undo placement
+    const t0 = (snapRef.current?.scenes || [])
+      .filter((x) => x.track === 0)
+      .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    const idx = t0.findIndex((x) => x.id === s.id);
+    const placeAfter = idx > 0 ? t0[idx - 1].id : null;
+    void runStructural('delete', async () => {
+      await deleteSceneApi(s.id);
+      await refreshSnap();
+      setTimelineSel(null);
+      setSelection(null);
+      return [{
+        op: 'delete', sceneId: s.id, code, name: s.name,
+        track: s.track, start: starts.get(s.id) ?? 0,
+        duration: s.durationFrames || 150, placeAfter,
+      }];
+    });
+  }, [kbScene, runStructural, deleteSceneApi, refreshSnap, starts]);
+
+  const copySelected = useCallback(() => {
+    const s = kbScene();
+    if (!s) return;
+    const code = tsxRef.current[s.id];
+    if (!code) { setStatus('scene has no code to copy'); return; }
+    clipboardRef.current = { code, name: s.name, duration: s.durationFrames || 150, track: s.track };
+    setStatus(`copied ${s.name}`);
+  }, [kbScene]);
+
+  const pasteClipboard = useCallback(() => {
+    const clip = clipboardRef.current;
+    if (!clip) { setStatus('nothing copied'); return; }
+    void runStructural('paste', async () => {
+      const here = Math.round(lastFrameRef.current);
+      // track 0: insert at the playhead's slot; track ≥1: start at the playhead
+      let placeAfter: string | null = null;
+      if (clip.track === 0) {
+        const t0 = (snapRef.current?.scenes || [])
+          .filter((x) => x.track === 0)
+          .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+        for (const x of t0) {
+          const st = starts.get(x.id) ?? 0;
+          if (here > st + (x.durationFrames || 150) / 2) placeAfter = x.id;
+        }
+      }
+      const made = await createPlaced(
+        {
+          code: clip.code, name: clip.name, duration: clip.duration,
+          track: clip.track, start: clip.track === 0 ? 0 : here,
+        },
+        placeAfter
+      );
+      await refreshSnap();
+      setTimelineSel(made.id);
+      return [{
+        op: 'create', sceneId: made.id, code: clip.code, name: clip.name,
+        track: clip.track, start: clip.track === 0 ? 0 : here,
+        duration: clip.duration, placeAfter,
+      }];
+    });
+  }, [runStructural, createPlaced, refreshSnap, starts]);
+
   // ---- transport ------------------------------------------------------------
   const togglePlay = useCallback(() => {
     const p = playerRef.current;
@@ -419,22 +743,81 @@ function App() {
     const onKey = (e: KeyboardEvent) => {
       const ae = document.activeElement as HTMLElement | null;
       if (/^(INPUT|TEXTAREA)$/.test(ae?.tagName || '') || ae?.isContentEditable) return;
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+      const mod = e.metaKey || e.ctrlKey;
+      const k = e.key.toLowerCase();
+      if (mod && k === 'z') {
         e.preventDefault();
         if (e.shiftKey) void redo(); else void undo();
         return;
       }
+      // CapCut grammar: ⌘B split · ⌘D duplicate · ⌘C/⌘V/⌘X clipboard · ⌫ delete
+      if (mod && k === 'b') { e.preventDefault(); splitScene(); return; }
+      if (mod && k === 'd') { e.preventDefault(); duplicateScene(); return; }
+      if (mod && k === 'c') { copySelected(); return; }
+      if (mod && k === 'v') { pasteClipboard(); return; }
+      if (mod && k === 'x') { copySelected(); deleteSelected(); return; }
+      if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); deleteSelected(); return; }
+      if (e.key === 'Escape') { setTimelineSel(null); setSelection(null); return; }
       if (e.key === ' ') { e.preventDefault(); togglePlay(); }
       else if (e.key === 'ArrowRight') { e.preventDefault(); playerRef.current?.seekTo(lastFrameRef.current + (e.shiftKey ? 10 : 1)); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); playerRef.current?.seekTo(Math.max(0, lastFrameRef.current - (e.shiftKey ? 10 : 1))); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [togglePlay, undo, redo]);
+  }, [togglePlay, undo, redo, splitScene, duplicateScene, copySelected, pasteClipboard, deleteSelected]);
 
   // ---- timeline commits -----------------------------------------------------
   const onTimelineCommit = useCallback(
     async (a: TimelineAction) => {
+      if (a.type === 'trim') {
+        const code = tsxRef.current[a.sceneId];
+        if (!code) { setStatus('scene has no code to trim'); return; }
+        const newTrim = getTrimIn(code) + a.delta;
+        const newCode = applyTrimIn(code, newTrim);
+        if (!newCode) { setStatus("⚠ can't trim this scene — its component shape is too unusual"); return; }
+        const before: Timing = { duration: a.prevDuration, track: a.track, ...(a.track !== 0 ? { start: a.prevStart } : {}) };
+        const after: Timing = { duration: a.prevDuration - a.delta, track: a.track, ...(a.track !== 0 ? { start: a.prevStart + a.delta } : {}) };
+        setStatus('trimming…');
+        try {
+          const err = await commitCode(a.sceneId, newCode);
+          if (err) throw new Error(err);
+          setTsxById((m) => ({ ...m, [a.sceneId]: newCode }));
+          await commitPositions([{ sceneId: a.sceneId, ...after }]);
+          applyLocalTiming([{ sceneId: a.sceneId, ...after }]);
+          pushUndo({
+            kind: 'batch', label: 'trim', ops: [
+              { op: 'code', sceneId: a.sceneId, before: code, after: newCode },
+              { op: 'timing', updates: [{ sceneId: a.sceneId, before, after }] },
+            ],
+          });
+          setStatus(`✓ trimmed ${Math.abs(a.delta)} frames ${a.delta > 0 ? 'off' : 'back onto'} the start — ⌘Z to undo`);
+        } catch (err) {
+          setStatus(`✗ trim failed: ${(err as Error).message}`);
+          refreshSnap().catch(() => {});
+        }
+        return;
+      }
+
+      if (a.type === 'adopt0') {
+        setStatus('moving to main track…');
+        try {
+          await commitPositions([{ sceneId: a.sceneId, track: 0 }]);
+          await commitReorder(a.order);
+          await refreshSnap();
+          pushUndo({
+            kind: 'batch', label: 'move to main track', ops: [
+              { op: 'timing', updates: [{ sceneId: a.sceneId, before: a.prev, after: { track: 0 } }] },
+              { op: 'reorder', before: a.prevOrder, after: a.order },
+            ],
+          });
+          setStatus('✓ moved to main track — ⌘Z to undo');
+        } catch (err) {
+          setStatus(`✗ move failed: ${(err as Error).message}`);
+          refreshSnap().catch(() => {});
+        }
+        return;
+      }
+
       if (a.type === 'reorder') {
         applyLocalOrder(a.order);
         setStatus('reordering…');
@@ -471,7 +854,7 @@ function App() {
         setStatus(`✗ timing failed, reverted: ${(err as Error).message}`);
       }
     },
-    [applyLocalOrder, applyLocalTiming, commitPositions, commitReorder, pushUndo]
+    [applyLocalOrder, applyLocalTiming, commitPositions, commitReorder, pushUndo, commitCode, refreshSnap]
   );
 
   // ---- canvas hit-testing + drag -------------------------------------------
@@ -824,10 +1207,12 @@ function App() {
         <Timeline
           scenes={snap.scenes}
           starts={starts}
+          trims={trims}
           totalFrames={totalFrames}
           frame={frame}
-          activeSceneId={active?.sceneId ?? null}
+          activeSceneId={timelineSel ?? active?.sceneId ?? null}
           onSeek={(f) => { playerRef.current?.pause(); playerRef.current?.seekTo(f); }}
+          onSelect={setTimelineSel}
           commit={onTimelineCommit}
         />
       </div>
@@ -838,7 +1223,11 @@ function App() {
 type TimelineAction =
   | { type: 'retime'; sceneId: string; start?: number; track?: number; prev: Timing }
   | { type: 'resize'; sceneId: string; start?: number; duration: number; prev: Timing }
-  | { type: 'reorder'; order: string[]; prev: string[] };
+  | { type: 'reorder'; order: string[]; prev: string[] }
+  // left-edge drag: trim `delta` frames off the clip's CONTENT start (negative restores)
+  | { type: 'trim'; sceneId: string; delta: number; prevStart: number; prevDuration: number; track: number }
+  // a clip from track ≥1 dropped INTO track 0 at a specific slot
+  | { type: 'adopt0'; sceneId: string; prev: Timing; order: string[]; prevOrder: string[] };
 
 const ROW_H = 34;
 const RULER_H = 20;
@@ -855,13 +1244,15 @@ const SNAP = 10; // frames, mirrors the RVE timeline
 function Timeline(props: {
   scenes: SceneInfo[];
   starts: Map<string, number>;
+  trims: Map<string, number>;
   totalFrames: number;
   frame: number;
   activeSceneId: string | null;
   onSeek: (f: number) => void;
+  onSelect: (id: string | null) => void;
   commit: (a: TimelineAction) => void;
 }) {
-  const { scenes, starts, totalFrames, frame, activeSceneId, onSeek, commit } = props;
+  const { scenes, starts, trims, totalFrames, frame, activeSceneId, onSeek, onSelect, commit } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const [ghost, setGhost] = useState<({ sceneId: string } & Required<Pick<Timing, 'start' | 'track' | 'duration'>>) | null>(null);
   const dragRef = useRef<{
@@ -902,8 +1293,10 @@ function Timeline(props: {
     try { wrap.setPointerCapture(e.pointerId); } catch { /* synthetic */ }
 
     if (!clipEl) {
-      // Ruler / empty space: scrub.
+      // Ruler / empty space: scrub. A press in the row area (not the ruler)
+      // also drops the clip selection — CapCut's click-away behaviour.
       const r = wrap.getBoundingClientRect();
+      if (e.clientY - r.top > RULER_H) onSelect(null);
       const seek = (x: number) => onSeek(Math.round(Math.max(0, Math.min(1, (x - r.left) / r.width)) * (totalFrames - 1)));
       seek(e.clientX);
       const move = (ev: PointerEvent) => seek(ev.clientX);
@@ -916,8 +1309,10 @@ function Timeline(props: {
     const sceneId = clipEl.getAttribute('data-clip')!;
     const scene = scenes.find((s) => s.id === sceneId)!;
     const rect = clipEl.getBoundingClientRect();
+    // Selected clips grow their trim zones — easy to grab, like CapCut.
+    const edge = sceneId === activeSceneId ? 16 : 8;
     const zone: 'move' | 'resize-l' | 'resize-r' =
-      e.clientX - rect.left <= 8 ? 'resize-l' : rect.right - e.clientX <= 8 ? 'resize-r' : 'move';
+      e.clientX - rect.left <= edge ? 'resize-l' : rect.right - e.clientX <= edge ? 'resize-r' : 'move';
     dragRef.current = {
       sceneId,
       zone,
@@ -948,10 +1343,12 @@ function Timeline(props: {
       const end = snapFrames(d.orig.start + Math.max(5, d.orig.duration + dxF), d.sceneId);
       setGhost({ sceneId: d.sceneId, start: d.orig.start, track: d.orig.track, duration: Math.max(5, end - d.orig.start) });
     } else {
-      // left trim: start moves, end stays — meaningless on track 0 (derived start)
-      if (d.orig.track === 0) return;
-      const ns = snapFrames(Math.max(0, Math.min(d.orig.start + dxF, d.orig.start + d.orig.duration - 5)), d.sceneId);
-      setGhost({ sceneId: d.sceneId, start: ns, track: d.orig.track, duration: d.orig.start + d.orig.duration - ns });
+      // Left edge = TRIM-IN: cut content off the clip's start (the clip's end
+      // stays put; on track 0 later clips ripple after commit). Dragging LEFT
+      // restores previously trimmed frames — never past the original frame 0.
+      const trimmed = trims.get(d.sceneId) ?? 0;
+      const delta = Math.max(-trimmed, Math.min(dxF, d.orig.duration - 5));
+      setGhost({ sceneId: d.sceneId, start: d.orig.start + delta, track: d.orig.track, duration: d.orig.duration - delta });
     }
   };
 
@@ -960,11 +1357,19 @@ function Timeline(props: {
     const g = ghost;
     dragRef.current = null;
     setGhost(null);
-    if (!d || !d.moved || !g) return;
+    if (!d) return;
+    if (!d.moved) {
+      // Clean click: select the clip (grows its trim handles, arms ⌘D/⌘B/⌫).
+      onSelect(d.sceneId);
+      return;
+    }
+    if (!g) return;
 
     if (d.zone === 'move') {
-      if (g.track === 0 && d.orig.track === 0) {
-        // Same-row move on track 0 = reorder by dragged centre.
+      if (g.track === 0) {
+        // Landing on track 0 — position in the row comes from the dragged
+        // centre, ANY number of slots away. From another track it's an
+        // adoption: track change + insertion in one undoable gesture.
         const t0 = scenes.filter((s) => s.track === 0).sort((a, b) => (starts.get(a.id) ?? 0) - (starts.get(b.id) ?? 0));
         const others = t0.filter((s) => s.id !== d.sceneId);
         const centre = g.start + g.duration / 2;
@@ -973,20 +1378,46 @@ function Timeline(props: {
           const st = starts.get(s.id) ?? 0;
           if (centre > st + (s.durationFrames || 150) / 2) idx++;
         }
-        const prevIds = [...t0.map((s) => s.id), ...scenes.filter((s) => s.track !== 0).map((s) => s.id)];
+        const rest = scenes.filter((s) => s.track !== 0 && s.id !== d.sceneId).map((s) => s.id);
         const newT0 = [...others.slice(0, idx).map((s) => s.id), d.sceneId, ...others.slice(idx).map((s) => s.id)];
-        const order = [...newT0, ...scenes.filter((s) => s.track !== 0).map((s) => s.id)];
-        if (order.join() !== prevIds.join()) commit({ type: 'reorder', order, prev: prevIds });
+        const order = [...newT0, ...rest];
+        if (d.orig.track === 0) {
+          const prevIds = [...t0.map((s) => s.id), ...rest];
+          if (order.join() !== prevIds.join()) commit({ type: 'reorder', order, prev: prevIds });
+        } else {
+          const prevOrder = [...t0.map((s) => s.id), d.sceneId, ...rest];
+          commit({
+            type: 'adopt0',
+            sceneId: d.sceneId,
+            prev: { start: d.orig.start, track: d.orig.track },
+            order,
+            prevOrder,
+          });
+        }
         return;
       }
       commit({
         type: 'retime',
         sceneId: d.sceneId,
-        // Track 0 derives start from order — never send one when landing there.
-        ...(g.track === 0 ? {} : { start: g.start }),
+        start: g.start,
         ...(g.track !== d.orig.track ? { track: g.track } : {}),
         prev: { start: d.orig.start, track: d.orig.track },
       });
+      return;
+    }
+
+    if (d.zone === 'resize-l') {
+      const delta = g.start - d.orig.start; // >0 trims, <0 restores
+      if (delta !== 0) {
+        commit({
+          type: 'trim',
+          sceneId: d.sceneId,
+          delta,
+          prevStart: d.orig.start,
+          prevDuration: d.orig.duration,
+          track: d.orig.track,
+        });
+      }
       return;
     }
 
@@ -994,7 +1425,6 @@ function Timeline(props: {
       type: 'resize',
       sceneId: d.sceneId,
       duration: g.duration,
-      ...(d.zone === 'resize-l' ? { start: g.start } : {}),
       prev: { start: d.orig.start, duration: d.orig.duration },
     });
   };
@@ -1021,8 +1451,9 @@ function Timeline(props: {
         // left make them glide rather than jump.
         let preview: Map<string, number> | null = null;
         if (ghost) {
-          const dragged = scenes.find((sc) => sc.id === ghost.sceneId);
-          if (dragged && dragged.track === 0 && ghost.track === 0) {
+          // Any clip hovering the main track parts the row — including one
+          // being dragged DOWN from an upper track.
+          if (ghost.track === 0) {
             const others = scenes
               .filter((sc) => sc.track === 0 && sc.id !== ghost.sceneId)
               .sort((a, b) => (starts.get(a.id) ?? 0) - (starts.get(b.id) ?? 0));

@@ -53,6 +53,16 @@
   .tl-clip .hL, .tl-clip .hR { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
   .tl-clip .hL { left: 0; border-left: 2px solid rgba(123,229,164,.55); }
   .tl-clip .hR { right: 0; border-right: 2px solid rgba(123,229,164,.55); }
+  /* selected clip: trim zones grow and show grip bars — easy to grab */
+  .tl-clip.on .hL, .tl-clip.on .hR { width: 16px; }
+  .tl-clip.on .hL { border-left-width: 4px; border-left-color: #5FD394; }
+  .tl-clip.on .hR { border-right-width: 4px; border-right-color: #5FD394; }
+  .tl-clip.on .hL::after, .tl-clip.on .hR::after {
+    content: ''; position: absolute; top: 26%; bottom: 26%; width: 3px;
+    border-radius: 2px; background: #5FD394;
+  }
+  .tl-clip.on .hL::after { left: 6px; }
+  .tl-clip.on .hR::after { right: 6px; }
   .tl-head { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #5FD394; box-shadow: 0 0 6px #5FD394; pointer-events: none; z-index: 5; }
   .tc { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: 15px; }
   .pad { padding: 30px; }

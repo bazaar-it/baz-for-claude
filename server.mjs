@@ -711,6 +711,56 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    if (url.pathname === '/api/editor/scene-create' && req.method === 'POST') {
+      if (!session.project) return send(res, 400, { error: 'no project pinned' });
+      const body = JSON.parse((await readBody(req)).toString('utf8'));
+      if (typeof body.code !== 'string' || !body.code.trim()) {
+        return send(res, 400, { error: 'code required' });
+      }
+      const tmp = path.join(os.tmpdir(), `baz-editor-new-${Date.now().toString(36)}.tsx`);
+      await fsp.writeFile(tmp, body.code, 'utf8');
+      try {
+        // `scenes create` has no --json — diff the project state to learn the
+        // new scene's id (the only new id is the one we just made).
+        const before = await bazJson(['state', '--json', '--project-id', session.project]);
+        const known = new Set((before.scenes || []).map((s) => s.id));
+        const args = [
+          'scenes', 'create',
+          '--file', tmp,
+          '--duration', String(Math.max(1, Math.round(body.duration ?? 150))),
+          '--track', String(body.track ?? 0),
+          '--start', String(Math.max(0, Math.round(body.start ?? 0))),
+          '--project-id', session.project,
+        ];
+        if (body.name) args.push('--name', String(body.name));
+        await execFileAsync('baz', args, { maxBuffer: 32 * 1024 * 1024, timeout: 60_000 });
+        const after = await bazJson(['state', '--json', '--project-id', session.project]);
+        const created = (after.scenes || []).find((s) => !known.has(s.id));
+        if (!created) return send(res, 500, { error: 'create reported success but no new scene found' });
+        return send(res, 200, { success: true, scene: created });
+      } catch (err) {
+        return send(res, 500, { error: err && err.message ? err.message : String(err) });
+      } finally {
+        fsp.unlink(tmp).catch(() => {});
+      }
+    }
+
+    if (url.pathname === '/api/editor/scene-delete' && req.method === 'POST') {
+      if (!session.project) return send(res, 400, { error: 'no project pinned' });
+      const body = JSON.parse((await readBody(req, 1024 * 64)).toString('utf8'));
+      if (!body.sceneId) return send(res, 400, { error: 'sceneId required' });
+      try {
+        await execFileAsync(
+          'baz',
+          ['scenes', 'delete', body.sceneId, '--force', '--project-id', session.project],
+          { maxBuffer: 8 * 1024 * 1024, timeout: 60_000 }
+        );
+        return send(res, 200, { success: true });
+      } catch (err) {
+        return send(res, 500, { error: err && err.message ? err.message : String(err) });
+      }
+    }
+
     if (url.pathname === '/stream') {
       const target = url.searchParams.get('u');
       if (!target) return send(res, 400, { error: 'missing u' });

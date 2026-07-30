@@ -194,6 +194,153 @@ export function applyTransform(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Trim-in: cut the first N frames of a scene's CONTENT.
+//
+// The platform's timing metadata has no trim-in field, so the trim must live
+// in the scene TSX itself to survive Lambda export: wrap the default
+// component's root JSX in a negative-offset Sequence — the standard Remotion
+// idiom for playing a clip from N frames in. Scenes already run inside an
+// outer Sequence (frame 0 at scene start), so `from={-N}` shifts their whole
+// internal timeline, animations and audio alike. `window.Remotion.Sequence`
+// is spelled out because that global is the one contract every scene and the
+// Lambda runtime share; scene-local destructured names can't be relied on.
+// ---------------------------------------------------------------------------
+
+const TRIM_OPEN_RE = /<window\.Remotion\.Sequence from=\{-(\d+)\} layout="none" data-baztrim>/;
+const TRIM_CLOSE = '</window.Remotion.Sequence>';
+
+/** Frames currently trimmed off the scene's start (0 = no wrapper). */
+export function getTrimIn(tsx: string): number {
+  const m = TRIM_OPEN_RE.exec(tsx);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+interface FnNode {
+  type: string;
+  body?: unknown;
+  id?: { name?: string };
+}
+
+/**
+ * Root JSX nodes of the default-exported component: every top-level
+ * `return <jsx>` in its body (conditional returns each get wrapped), or the
+ * body itself for an implicit-return arrow. Does NOT descend into nested
+ * functions — a `return` inside a .map() callback is not a component root.
+ */
+function findComponentRoots(tsx: string): Array<{ start: number; end: number }> | null {
+  let program: unknown;
+  try {
+    program = parse(tsx, { sourceType: 'module', plugins: ['typescript', 'jsx'], errorRecovery: true }).program;
+  } catch {
+    return null;
+  }
+  const body = (program as { body: Array<Record<string, unknown>> }).body;
+
+  let fn: FnNode | null = null;
+  let defaultName: string | null = null;
+  for (const stmt of body) {
+    if (stmt.type !== 'ExportDefaultDeclaration') continue;
+    const d = stmt.declaration as Record<string, unknown>;
+    if (d.type === 'FunctionDeclaration' || d.type === 'ArrowFunctionExpression' || d.type === 'FunctionExpression') {
+      fn = d as unknown as FnNode;
+    } else if (d.type === 'Identifier') {
+      defaultName = (d as unknown as { name: string }).name;
+    }
+  }
+  if (!fn && defaultName) {
+    for (const stmt of body) {
+      if (stmt.type === 'FunctionDeclaration' && (stmt.id as { name?: string })?.name === defaultName) {
+        fn = stmt as unknown as FnNode;
+      }
+      if (stmt.type === 'VariableDeclaration') {
+        for (const dec of stmt.declarations as Array<Record<string, unknown>>) {
+          if ((dec.id as { name?: string })?.name === defaultName) {
+            const init = dec.init as Record<string, unknown> | null;
+            if (init && (init.type === 'ArrowFunctionExpression' || init.type === 'FunctionExpression')) {
+              fn = init as unknown as FnNode;
+            }
+          }
+        }
+      }
+    }
+  }
+  if (!fn) return null;
+
+  const fnBody = fn.body as Record<string, unknown>;
+  // Implicit-return arrow: the body IS the root JSX.
+  if (fnBody.type === 'JSXElement' || fnBody.type === 'JSXFragment') {
+    return [{ start: fnBody.start as number, end: fnBody.end as number }];
+  }
+
+  const roots: Array<{ start: number; end: number }> = [];
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) return node.forEach(walk);
+    const n = node as Record<string, unknown>;
+    // Stay inside THIS component: nested function bodies own their returns.
+    if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return;
+    if (n.type === 'ReturnStatement') {
+      const arg = n.argument as Record<string, unknown> | null;
+      if (arg && (arg.type === 'JSXElement' || arg.type === 'JSXFragment')) {
+        roots.push({ start: arg.start as number, end: arg.end as number });
+      }
+      return;
+    }
+    for (const key of Object.keys(n)) {
+      if (key === 'loc') continue;
+      walk(n[key]);
+    }
+  };
+  walk(fnBody);
+  return roots.length ? roots : null;
+}
+
+/**
+ * Set the ABSOLUTE trim-in to `frames`. Updates an existing wrapper's offset,
+ * unwraps entirely at 0, or wraps every component root. Returns null when the
+ * component shape can't be resolved — caller should refuse rather than guess.
+ */
+export function applyTrimIn(tsx: string, frames: number): string | null {
+  const n = Math.max(0, Math.round(frames));
+  const existing = TRIM_OPEN_RE.exec(tsx);
+
+  if (existing) {
+    if (n === parseInt(existing[1], 10)) return tsx;
+    if (n > 0) {
+      return tsx.replace(
+        new RegExp(TRIM_OPEN_RE.source, 'g'),
+        `<window.Remotion.Sequence from={-${n}} layout="none" data-baztrim>`
+      );
+    }
+    // n === 0 → unwrap every wrapper (conditional-return scenes have several)
+    let out = tsx;
+    let m: RegExpExecArray | null;
+    while ((m = TRIM_OPEN_RE.exec(out))) {
+      const openStart = m.index;
+      const innerStart = openStart + m[0].length;
+      const closeStart = out.indexOf(TRIM_CLOSE, innerStart);
+      if (closeStart < 0) return null;
+      out = out.slice(0, openStart) + out.slice(innerStart, closeStart) + out.slice(closeStart + TRIM_CLOSE.length);
+    }
+    return out;
+  }
+
+  if (n === 0) return tsx;
+  const roots = findComponentRoots(tsx);
+  if (!roots) return null;
+  let out = tsx;
+  for (const r of [...roots].sort((a, b) => b.start - a.start)) {
+    out =
+      out.slice(0, r.start) +
+      `<window.Remotion.Sequence from={-${n}} layout="none" data-baztrim>` +
+      out.slice(r.start, r.end) +
+      TRIM_CLOSE +
+      out.slice(r.end);
+  }
+  return out;
+}
+
 /**
  * Replace an element's PURE-TEXT content, for double-click inline editing.
  * Only applies when the children are static text (JSXText nodes, or a single

@@ -805,7 +805,7 @@
   </div>
 </div>
 
-<div id="box"><img id="boxImg" alt="" /></div>
+<div id="box"></div>
 <div id="toast"></div>
 
 <script>
@@ -1259,7 +1259,7 @@ function drawRefs() {
     const chip = document.createElement('div');
     chip.className = 'refChip';
     chip.innerHTML = `<img src="${src}" alt="reference ${i + 1}" /><button title="Remove">×</button>`;
-    chip.querySelector('img').onclick = () => { $('boxImg').src = src; $('box').classList.add('on'); };
+    chip.querySelector('img').onclick = () => showBox(src);
     chip.querySelector('button').onclick = () => {
       pendingRefs.splice(i, 1);
       drawRefs();
@@ -1613,17 +1613,26 @@ async function handleVoiceEvent(ev) {
     vcSend({ type: 'response.create' });
   } else if (ev.type === 'error') {
     console.warn('voice error', ev);
+    vlog('api error: ' + JSON.stringify(ev.error || ev).slice(0, 300));
   }
 }
 
-async function voiceStop() {
+/** Voice lifecycle telemetry → server console, so drops are diagnosable. */
+function vlog(msg) {
+  try {
+    fetch('/api/voice/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msg }), keepalive: true });
+  } catch { /* logging only */ }
+}
+
+async function voiceStop(reason) {
   if (!vc) return;
+  vlog('stopped: ' + (reason || 'user clicked mic off'));
   try { vc.dc && vc.dc.close(); } catch { /* closing */ }
   try { vc.pc && vc.pc.close(); } catch { /* closing */ }
   try { vc.stream && vc.stream.getTracks().forEach((t) => t.stop()); } catch { /* closing */ }
   vc = null;
   micState('');
-  toast('Voice review ended');
+  toast(reason ? reason + ' — click the mic to reconnect' : 'Voice review ended', !!reason);
 }
 
 async function voiceStart() {
@@ -1647,15 +1656,24 @@ async function voiceStart() {
     vc = { pc, dc: null, stream };
     pc.ontrack = (e) => { $('voiceOut').srcObject = e.streams[0]; };
     stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+    // If the OS/browser revokes the mic mid-call, say so instead of going deaf.
+    stream.getTracks().forEach((t) => { t.onended = () => { if (vc) voiceStop('Microphone was taken away'); }; });
+    pc.oniceconnectionstatechange = () => {
+      vlog('ice: ' + pc.iceConnectionState);
+      if (['failed', 'disconnected', 'closed'].includes(pc.iceConnectionState) && vc) {
+        voiceStop('Voice connection lost');
+      }
+    };
     const dc = pc.createDataChannel('oai-events');
     vc.dc = dc;
     dc.onmessage = (e) => { try { handleVoiceEvent(JSON.parse(e.data)); } catch { /* non-JSON */ } };
     dc.onopen = () => {
       micState('live');
+      vlog('live');
       toast('Voice review live — say hello');
       pushPlayhead();
     };
-    dc.onclose = () => { if (vc) voiceStop(); };
+    dc.onclose = () => { if (vc) voiceStop('Voice session ended'); };
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -1711,7 +1729,7 @@ async function loadNotes() {
     // Every image (the captured frame AND any references) expands on click.
     el.querySelectorAll('img').forEach((im) => {
       im.onclick = () => {
-        $('boxImg').src = im.src;
+        showBox(im.src);
         $('box').classList.add('on');
       };
     });
@@ -1727,6 +1745,19 @@ async function loadNotes() {
   });
 }
 
+// Lightbox image is created on first use — no src-less <img> in the markup.
+function showBox(src) {
+  let im = $('box').querySelector('img');
+  if (!im) {
+    im = document.createElement('img');
+    im.alt = 'expanded view';
+    im.src = src; // src set before the element ever enters the DOM
+    $('box').appendChild(im);
+  } else {
+    im.src = src;
+  }
+  $('box').classList.add('on');
+}
 $('box').onclick = () => $('box').classList.remove('on');
 
 // ------------------------------------------------------------- keyboard

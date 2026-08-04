@@ -542,16 +542,45 @@ const VOICE_TOOLS = [
   },
 ];
 
+/**
+ * Full scene TSX rides in the session context by default, so the agent has
+ * read every line of the film before the first word is spoken — the digest
+ * stays on top as the map. Budgeted: scenes past the cap fall back to
+ * get_scene_code, in timeline order so the opening scenes always make it.
+ */
+const FULL_CODE_BUDGET = 150_000; // chars of TSX in-context (~35k tokens)
+
 async function buildVoiceInstructions() {
-  const { digest } = await getProjectDigest();
+  const { digest, blocks } = await getProjectDigest();
   const pid = projectIdFor(session.project, session.url);
   const total = totalOf(session.scenes);
+
+  let codeSection = '';
+  const skipped = [];
+  const order = session.scenes.length
+    ? [...session.scenes].sort((a, b) => a.start - b.start || a.track - b.track).map((s) => s.id)
+    : Object.keys(blocks);
+  let used = 0;
+  for (const id of order) {
+    const b = blocks[id];
+    if (!b) continue;
+    if (used + b.code.length > FULL_CODE_BUDGET) { skipped.push(b.name); continue; }
+    used += b.code.length;
+    codeSection += `\n--- SCENE: ${b.name} [${id}] ---\n${b.code}\n`;
+  }
+
   return (
     DIRECTOR_BRIEF +
     `\n\n=== THE VIDEO UNDER REVIEW ===\n` +
     (pid ? `baz project id: ${pid}\n` : '') +
     (total ? `total duration: ${total.toFixed(2)}s at ${session.fps || 30}fps\n` : '') +
-    `\nScene digest (from the real code):\n${digest}`
+    `\nScene digest (the map):\n${digest}` +
+    (codeSection
+      ? `\n\n=== FULL SCENE CODE (you have already read all of this) ===\n${codeSection}`
+      : '') +
+    (skipped.length
+      ? `\n\n(Scenes not included above — call get_scene_code to read them: ${skipped.join(', ')})`
+      : '')
   );
 }
 
@@ -997,6 +1026,14 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/voice/digest' && req.method === 'GET') {
       const { digest } = await getProjectDigest();
       return send(res, 200, { digest });
+    }
+
+    // Client-side voice lifecycle telemetry — lands in this server's log so
+    // dropped calls are diagnosable instead of "it can't hear me anymore".
+    if (url.pathname === '/api/voice/log' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req, 16 * 1024)).toString('utf8'));
+      console.log(`  voice-ui   ${String(body.msg || '').slice(0, 300)}`);
+      return send(res, 200, { ok: true });
     }
 
     if (url.pathname === '/api/voice/session' && req.method === 'POST') {

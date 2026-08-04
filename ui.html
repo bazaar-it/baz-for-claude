@@ -389,6 +389,26 @@
     flex-shrink: 0;
   }
   .spacer { flex: 1; }
+
+  /* Voice review mic — grey idle, pulsing green while live. */
+  #mic {
+    width: 38px; height: 35px;
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0; flex-shrink: 0;
+    color: var(--dim);
+  }
+  #mic svg { width: 16px; height: 16px; }
+  #mic.connecting { color: var(--dimmer); animation: micPulse 1s ease infinite; }
+  #mic.live {
+    background: var(--accent-grad);
+    border-color: transparent;
+    color: #0A0A0A;
+    animation: micPulse 1.6s ease infinite;
+  }
+  @keyframes micPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(95,211,148,.45); }
+    50% { box-shadow: 0 0 0 6px rgba(95,211,148,0); }
+  }
   @media (max-width: 1200px) {
     #side { width: 320px; }
   }
@@ -751,7 +771,11 @@
       </div>
       <!-- Timecode only. Frame/scene/project ids ride in the note, not the UI. -->
       <div class="readout"><span id="tc">00:00.00</span></div>
+      <button id="mic" type="button" data-tip="Voice review — talk through the video">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+      </button>
     </div>
+    <audio id="voiceOut" autoplay hidden></audio>
   </div>
 </div>
 
@@ -1490,6 +1514,175 @@ $('composer').addEventListener('input', () => {
 // Pause the moment you start writing — you're describing THIS frame.
 $('composer').addEventListener('focus', () => v.pause());
 
+// ------------------------------------------------------------- voice review
+// Talk through the video with a realtime agent (OpenAI Realtime over WebRTC).
+// The agent holds a digest of every scene's code, reads full TSX on demand,
+// sees the paused frame, and files agreed changes as normal notes. The real
+// API key lives server-side; this page only ever holds a ~60s ephemeral token.
+let vc = null; // { pc, dc, stream } while a call is live
+
+function micState(state) {
+  $('mic').className = state; // '', 'connecting', 'live'
+}
+
+/** Smaller than grabFrame: JPEG for vision input, tokens cost real money. */
+function voiceFrame() {
+  if (!v.videoWidth) return null;
+  const scale = Math.min(1, 768 / Math.max(v.videoWidth, v.videoHeight));
+  const c = document.createElement('canvas');
+  c.width = Math.round(v.videoWidth * scale);
+  c.height = Math.round(v.videoHeight * scale);
+  c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+  try { return c.toDataURL('image/jpeg', 0.75); } catch { return null; }
+}
+
+function vcSend(ev) {
+  if (vc && vc.dc && vc.dc.readyState === 'open') vc.dc.send(JSON.stringify(ev));
+}
+
+function playheadText() {
+  const t = v.currentTime || 0;
+  const sc = sceneAt(t);
+  return `Playhead: ${tcOf(t)} (f${frameOf(t)})` + (sc ? ` in scene "${sc.name}" (+${Math.round((t - sc.start) * S.fps)}f)` : '');
+}
+
+let playheadPushTimer = 0;
+function pushPlayhead() {
+  if (!vc) return;
+  clearTimeout(playheadPushTimer);
+  playheadPushTimer = setTimeout(() => {
+    vcSend({
+      type: 'conversation.item.create',
+      item: { type: 'message', role: 'system', content: [{ type: 'input_text', text: playheadText() }] },
+    });
+  }, 600);
+}
+['seeked', 'pause'].forEach((ev) => v.addEventListener(ev, pushPlayhead));
+
+/** The agent's tools, executed here in the page against the local server. */
+async function runVoiceTool(name, params) {
+  if (name === 'get_playhead') {
+    const t = v.currentTime || 0;
+    const sc = sceneAt(t);
+    return JSON.stringify({ seconds: +t.toFixed(2), frame: frameOf(t), timecode: tcOf(t), scene: sc ? sc.name : null });
+  }
+  if (name === 'get_scene_code') {
+    const r = await fetch('/api/voice/scene-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sceneId: params.sceneId || '' }),
+    });
+    const d = await r.json();
+    return r.ok ? `// ${d.name} [${d.id}]\n${d.code}` : `ERROR: ${d.error}`;
+  }
+  if (name === 'see_frame') {
+    const img = voiceFrame();
+    if (!img) return 'ERROR: no frame available (video not loaded)';
+    // Tool outputs are text-only, so attach the frame as a separate image item.
+    vcSend({
+      type: 'conversation.item.create',
+      item: { type: 'message', role: 'user', content: [{ type: 'input_image', image_url: img }] },
+    });
+    return `The frame at ${tcOf(v.currentTime)} is attached as an image. Look at it.`;
+  }
+  if (name === 'file_note') {
+    const time = typeof params.atSeconds === 'number' ? params.atSeconds : v.currentTime;
+    const r = await fetch('/api/note', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note: String(params.note || '').trim(), time, thumb: grabFrame(), voice: true, videoDuration: duration }),
+    });
+    if (!r.ok) return 'ERROR: filing failed';
+    toast('Note filed by voice agent');
+    loadNotes();
+    return 'Note filed. The coding agent will pick it up.';
+  }
+  return `ERROR: unknown tool ${name}`;
+}
+
+async function handleVoiceEvent(ev) {
+  if (ev.type === 'response.function_call_arguments.done') {
+    let params = {};
+    try { params = JSON.parse(ev.arguments || '{}'); } catch { /* tolerate */ }
+    let output;
+    try { output = await runVoiceTool(ev.name, params); } catch (err) { output = 'ERROR: ' + err.message; }
+    vcSend({
+      type: 'conversation.item.create',
+      item: { type: 'function_call_output', call_id: ev.call_id, output },
+    });
+    vcSend({ type: 'response.create' });
+  } else if (ev.type === 'error') {
+    console.warn('voice error', ev);
+  }
+}
+
+async function voiceStop() {
+  if (!vc) return;
+  try { vc.dc && vc.dc.close(); } catch { /* closing */ }
+  try { vc.pc && vc.pc.close(); } catch { /* closing */ }
+  try { vc.stream && vc.stream.getTracks().forEach((t) => t.stop()); } catch { /* closing */ }
+  vc = null;
+  micState('');
+  toast('Voice review ended');
+}
+
+async function voiceStart() {
+  micState('connecting');
+  try {
+    const cfg = await (await fetch('/api/voice/config')).json();
+    if (!cfg.available) throw new Error('Set OPENAI_API_KEY on the server and restart to enable voice');
+
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      throw new Error('Microphone blocked in this browser — open this same URL in Chrome or Safari to talk');
+    }
+
+    const sess = await fetch('/api/voice/session', { method: 'POST' });
+    const sd = await sess.json();
+    if (!sess.ok) throw new Error(sd.error || 'voice session failed');
+
+    const pc = new RTCPeerConnection();
+    vc = { pc, dc: null, stream };
+    pc.ontrack = (e) => { $('voiceOut').srcObject = e.streams[0]; };
+    stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+    const dc = pc.createDataChannel('oai-events');
+    vc.dc = dc;
+    dc.onmessage = (e) => { try { handleVoiceEvent(JSON.parse(e.data)); } catch { /* non-JSON */ } };
+    dc.onopen = () => {
+      micState('live');
+      toast('Voice review live — say hello');
+      pushPlayhead();
+    };
+    dc.onclose = () => { if (vc) voiceStop(); };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    let resp = await fetch(`https://api.openai.com/v1/realtime/calls?model=${encodeURIComponent(sd.model)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${sd.token}`, 'Content-Type': 'application/sdp' },
+      body: offer.sdp,
+    });
+    if (!resp.ok) {
+      // Older accounts route through the beta endpoint — same contract.
+      resp = await fetch(`https://api.openai.com/v1/realtime?model=${encodeURIComponent(sd.model)}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${sd.token}`, 'Content-Type': 'application/sdp' },
+        body: offer.sdp,
+      });
+    }
+    if (!resp.ok) throw new Error('realtime connect failed (HTTP ' + resp.status + ')');
+    await pc.setRemoteDescription({ type: 'answer', sdp: await resp.text() });
+  } catch (err) {
+    await voiceStop();
+    micState('');
+    toast(err.message, true);
+  }
+}
+
+$('mic').onclick = () => (vc ? voiceStop() : voiceStart());
+
 // ------------------------------------------------------------- notes list
 async function loadNotes() {
   const { notes } = await (await fetch('/api/notes')).json();
@@ -1506,7 +1699,7 @@ async function loadNotes() {
     el.innerHTML = `
       ${img}
       <div class="body">
-        <div class="tc mono">${n.timecode}</div>
+        <div class="tc mono">${n.timecode}${n.via === 'voice' ? ' <span title="Filed by the voice agent">🎙</span>' : ''}</div>
         <div class="tx">${n.note.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</div>
         ${(n.refImages || []).length
           ? `<div class="refs">${n.refImages

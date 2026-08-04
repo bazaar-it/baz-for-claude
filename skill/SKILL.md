@@ -100,6 +100,21 @@ Do NOT poll on a timer — the tail costs ~1MB and pushes events to you.
   sense next to them ("match this spacing", "this style"), so acting on the
   text alone will produce the wrong change.
 
+## Voice review
+
+If `OPENAI_API_KEY` is available in the environment, launch the server with it
+so the user can click the 🎙 mic and talk through the video with a realtime
+creative-director agent (it reads scene code, sees frames, and files agreed
+changes as notes — it never edits). Two things you must handle:
+
+- **Voice needs the user's own browser.** Claude's browser pane blocks the
+  microphone. Keep the pane open for yourself, and have the system browser
+  open the same URL for the user: launch WITHOUT `--no-open`, or run
+  `open http://localhost:<port>`.
+- **Notes flagged `via VOICE agent` are pre-agreed.** The user and the voice
+  agent already discussed and confirmed them aloud — execute them like any
+  other note, no need to re-confirm with the user.
+
 ## The work loop — batch, fix, refresh, re-check
 
 The user reviews faster than you edit. Notes WILL arrive while you're

@@ -54,6 +54,29 @@ The UI itself stays deliberately bare — you see a timecode, nothing else. Fram
 numbers, scene ids and layer stacks are resolved server-side and ride in the
 note, because that's who needs them.
 
+## Voice review (talk to it)
+
+Export `OPENAI_API_KEY` before launching, then click the **🎙 mic** in the
+transport bar and talk through the video with a realtime creative director
+(OpenAI Realtime API, default model `gpt-realtime-2.1`, `--voice-model` to
+change). It isn't dictation — it holds a digest of every scene's real code
+(timing, on-screen text, palette, motion), reads full TSX on demand, looks at
+the exact frame you're paused on, knows where your playhead is, and pushes
+back with director questions: does the hook land in 2 seconds, does this scene
+earn its duration, where does the pacing sag.
+
+It **never edits anything**. When you agree on a change out loud, it files ONE
+precise note into the normal pipeline — flagged `via VOICE agent` — and your
+coding agent executes it like any other note.
+
+The API key stays server-side; the browser only ever receives a ~60-second
+ephemeral token. Voice needs a real browser (Chrome/Safari) — Claude's own
+browser pane blocks microphone capture, so open the same localhost URL in your
+system browser to talk while the pane stays open for the agent.
+
+Realtime audio is OpenAI's most expensive mode; `--voice-model
+gpt-realtime-2.1-mini` is the cheaper option.
+
 ## Reference images
 
 **Paste or drop screenshots straight into the note box** — the "make it look

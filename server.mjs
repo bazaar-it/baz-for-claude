@@ -46,6 +46,7 @@ function parseArgs(argv) {
     else if (a === '--no-open') out.noOpen = true;
     else if (a === '--replay') out.replay = true;
     else if (a === '--sync-interval') out.syncInterval = parseInt(argv[++i], 10);
+    else if (a === '--voice-model') out.voiceModel = argv[++i];
     else if (a === '--help' || a === '-h') out.help = true;
   }
   return out;
@@ -66,6 +67,12 @@ baz-for-claude — frame-accurate video feedback for AI coding agents
   --no-open          Don't auto-open the browser
   --replay           Print every past note for this port, then exit
   --sync-interval <s>  How often to check for a newer export (default 30, 0 = off)
+  --voice-model <id>   OpenAI realtime model for voice review (default gpt-realtime-2.1)
+
+Voice: export OPENAI_API_KEY and click the mic in the UI to talk through the
+video with a realtime agent that has the scene map, can read scene code, see
+the paused frame, and files agreed changes as notes for your coding agent.
+The key stays server-side; the browser only ever gets a ~60s ephemeral token.
 
 State lives in <tmp>/baz-for-claude/<port>/ — isolated per port so parallel
 sessions never cross-post. Point your agent at the tail command printed
@@ -372,8 +379,185 @@ async function loadScenes(projectId) {
 // ---------------------------------------------------------------- helpers
 
 /** One human/Claude-readable line per note — the `tail -F` delivery format. */
+// ---------------------------------------------------------------- voice review
+// A realtime voice agent (OpenAI Realtime API over WebRTC) the user talks to
+// while watching. It gets a digest of every scene's code up front, can pull
+// full TSX on demand, see the paused frame, and files agreed changes as notes
+// into the normal pipeline — it never edits anything itself.
+
+const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
+const VOICE_MODEL = args.voiceModel || 'gpt-realtime-2.1';
+
+/** Full TSX for every scene, via the authenticated CLI — pinned, read-only. */
+async function fetchAllSceneCode(projectId) {
+  const { stdout } = await execFileAsync(
+    'baz',
+    ['scenes', 'code', '--all', '--project-id', projectId],
+    { maxBuffer: 32 * 1024 * 1024, timeout: 60_000 }
+  );
+  return stdout;
+}
+
+/** Split the --all dump back into per-scene blocks keyed by scene id. */
+function splitSceneCode(allCode) {
+  const blocks = {};
+  const re = /\/\/ =+\n\/\/ Scene: (.+)\n\/\/ ID: ([0-9a-f-]+)\n\/\/ =+\n/g;
+  const marks = [];
+  let m;
+  while ((m = re.exec(allCode))) marks.push({ name: m[1].trim(), id: m[2], end: re.lastIndex });
+  for (let i = 0; i < marks.length; i++) {
+    const upto = i + 1 < marks.length ? allCode.lastIndexOf('// =', allCode.indexOf(`// ID: ${marks[i + 1].id}`)) : allCode.length;
+    blocks[marks[i].id] = { name: marks[i].name, code: allCode.slice(marks[i].end, upto).trim() };
+  }
+  return blocks;
+}
+
+/**
+ * Compact per-scene digest the agent holds in context for the whole call:
+ * timing, the text actually on screen, palette, fonts, motion density. Rule-
+ * based on purpose — deterministic, instant, and free.
+ */
+function digestScene(code) {
+  const CSS_WORDS = new Set([
+    'absolute', 'relative', 'fixed', 'hidden', 'visible', 'none', 'block', 'flex',
+    'center', 'transparent', 'pointer', 'nowrap', 'uppercase', 'lowercase', 'cover',
+    'contain', 'column', 'row', 'bold', 'normal', 'italic', 'left', 'right', 'top',
+    'bottom', 'middle', 'baseline', 'inherit', 'auto', 'wrap', 'grid', 'inline',
+  ]);
+  const texts = [];
+  for (const m of code.matchAll(/"([^"\\\n]{3,80})"/g)) {
+    const s = m[1].trim();
+    // Human words only: no CSS functions/units/urls/selectors/JSX fragments.
+    if (/[(){}<>=;_:]|https?|px\b|deg\b|%\)|\.(png|jpe?g|mp4|svg|woff2?)$/i.test(s)) continue;
+    if (/^[#.,\d\s-]|^rgba?|^var\b/i.test(s)) continue;
+    // CSS keyword chains: border-box, tabular-nums, inline-block, sans-serif…
+    if (/^[a-z]+(-[a-z0-9]+)+$/.test(s)) continue;
+    if (CSS_WORDS.has(s.toLowerCase())) continue;
+    // Real on-screen copy has a space, or is one long word (a headline word).
+    if (!s.includes(' ') && s.length < 9) continue;
+    if (!/[A-Za-z]{3}/.test(s)) continue;
+    if (!texts.includes(s)) texts.push(s);
+    if (texts.length >= 12) break;
+  }
+  const colors = [...new Set([...code.matchAll(/#[0-9a-fA-F]{6}\b/g)].map((m) => m[0]))].slice(0, 6);
+  const fonts = [...new Set([...code.matchAll(/loadFont\?\.\("([^"]+)"/g)].map((m) => m[1]))];
+  const springs = (code.match(/spring\(/g) || []).length;
+  const interps = (code.match(/interpolate\(/g) || []).length;
+  const media = /OffthreadVideo|<Img|\.mp4|Video\b/.test(code) ? 'uses media assets' : 'pure motion graphics';
+  return { texts, colors, fonts, motion: `${interps} interpolations, ${springs} springs`, media };
+}
+
+let digestCache = { key: null, digest: '', blocks: {} };
+
+async function getProjectDigest() {
+  const pid = projectIdFor(session.project, session.url);
+  if (!pid) return { digest: '(no baz project loaded — video URL only, no scene map)', blocks: {} };
+  if (digestCache.key === pid && digestCache.digest) return digestCache;
+
+  const all = await fetchAllSceneCode(pid);
+  const blocks = splitSceneCode(all);
+  const byId = Object.fromEntries(session.scenes.map((s) => [s.id, s]));
+  const lines = [];
+  const ordered = session.scenes.length
+    ? [...session.scenes].sort((a, b) => a.start - b.start || a.track - b.track)
+    : Object.keys(blocks).map((id) => ({ id }));
+
+  for (const s of ordered) {
+    const b = blocks[s.id];
+    if (!b) continue;
+    const d = digestScene(b.code);
+    const t = byId[s.id];
+    const fps = session.fps || 30;
+    const timing = t
+      ? `track ${t.track}, ${t.start.toFixed(2)}s → ${(t.start + t.duration).toFixed(2)}s (f${Math.round(t.start * fps)}–f${Math.round((t.start + t.duration) * fps)})`
+      : 'timing unknown';
+    lines.push(
+      `• ${b.name} [${s.id}]\n` +
+      `  ${timing} · ${d.media} · ${d.motion}\n` +
+      (d.texts.length ? `  on-screen text: ${d.texts.map((x) => `"${x}"`).join(', ').slice(0, 300)}\n` : '') +
+      (d.colors.length ? `  palette: ${d.colors.join(' ')}${d.fonts.length ? ' · fonts: ' + d.fonts.join(', ') : ''}` : '')
+    );
+  }
+  const digest = lines.join('\n').slice(0, 16000);
+  digestCache = { key: pid, digest, blocks };
+  return digestCache;
+}
+
+const DIRECTOR_BRIEF = `You are a launch-video creative director doing a live review with the user, who is watching their video and talking to you.
+
+Craft you hold them to:
+- The hook is everything: the first 2 seconds must earn the next 40. If the opening doesn't grab, say so first.
+- One idea per scene. A scene that makes two points makes none.
+- Every scene must EARN its duration — flag anything that overstays, name the exact seconds to cut.
+- Cuts should land on motion or shape matches; a dead cut is a wasted transition.
+- Type discipline: one hierarchy, no more than two families, big enough to read on a phone.
+- Pacing has a curve: open hot, breathe in the middle, accelerate to the CTA. Say where the curve sags.
+- The CTA is one action, stated once, unmissable.
+
+How you work:
+- You have a scene-by-scene digest of the actual code below. Use it — refer to scenes by name and to moments by timecode or frame.
+- Ask sharp questions, ONE at a time, and prefer questions the user hasn't thought of ("who is this for?", "what should someone feel at 0:10?", "why does this scene deserve 4 seconds?").
+- When the discussion zooms into a scene, call get_scene_code to read its real TSX before making claims about it.
+- Call see_frame to look at the exact frame the user is paused on when they say "this", "here", or describe something visual.
+- The playhead position arrives as system messages — that's where the user is looking right now.
+- You NEVER edit anything. When you and the user agree on a change, call file_note with ONE precise, self-contained instruction (name the scene, the frames, the exact change). The user's coding agent executes notes. Never file a note the user hasn't agreed to; confirm aloud first.
+- Keep spoken replies short — two or three sentences, then stop. This is a conversation, not a lecture.
+- Be candid. If a scene is weak, say it plainly and say why.`;
+
+const VOICE_TOOLS = [
+  {
+    type: 'function',
+    name: 'get_scene_code',
+    description: 'Read the full TSX source of one scene of the video being reviewed. Use before making detailed claims about a scene.',
+    parameters: {
+      type: 'object',
+      properties: { sceneId: { type: 'string', description: 'Scene id (or exact scene name) from the digest' } },
+      required: ['sceneId'],
+    },
+  },
+  {
+    type: 'function',
+    name: 'see_frame',
+    description: 'Look at the exact video frame the user is currently paused on. Returns an image of it.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    type: 'function',
+    name: 'get_playhead',
+    description: 'Get the current playhead position: time, frame number, and which scene it is in.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    type: 'function',
+    name: 'file_note',
+    description: 'File ONE agreed change as a note for the coding agent to execute. Only after the user has explicitly agreed. The note must be self-contained: scene name, frames or timecode, and the exact change.',
+    parameters: {
+      type: 'object',
+      properties: {
+        note: { type: 'string', description: 'The precise instruction' },
+        atSeconds: { type: 'number', description: 'The moment in the video this note is about (defaults to current playhead)' },
+      },
+      required: ['note'],
+    },
+  },
+];
+
+async function buildVoiceInstructions() {
+  const { digest } = await getProjectDigest();
+  const pid = projectIdFor(session.project, session.url);
+  const total = totalOf(session.scenes);
+  return (
+    DIRECTOR_BRIEF +
+    `\n\n=== THE VIDEO UNDER REVIEW ===\n` +
+    (pid ? `baz project id: ${pid}\n` : '') +
+    (total ? `total duration: ${total.toFixed(2)}s at ${session.fps || 30}fps\n` : '') +
+    `\nScene digest (from the real code):\n${digest}`
+  );
+}
+
 function formatNoteLine(n) {
   const bits = [`f${n.frame}`, n.timecode];
+  if (n.via === 'voice') bits.push('via VOICE agent (already discussed and agreed with the user aloud)');
   // Full id, not truncated: the agent copies this straight into --project-id.
   if (n.project) bits.push(`project ${n.project} (pin: --project-id ${n.project})`);
   if (n.scene) bits.push(`scene "${n.scene.name}" ${String(n.scene.id).slice(0, 8)} +${n.scene.frameInScene}f`);
@@ -550,6 +734,7 @@ async function handleNote(req, res) {
   const note = {
     id,
     at: stamp,
+    via: payload.voice ? 'voice' : 'ui',
     note: String(payload.note || '').trim(),
     time,
     frame,
@@ -804,6 +989,62 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ...session, thumbs: args.thumbs });
     }
 
+    if (url.pathname === '/api/voice/config' && req.method === 'GET') {
+      return send(res, 200, { available: !!OPENAI_KEY, model: VOICE_MODEL });
+    }
+
+    // Debug: what the agent will hold in context. Costs nothing to look at.
+    if (url.pathname === '/api/voice/digest' && req.method === 'GET') {
+      const { digest } = await getProjectDigest();
+      return send(res, 200, { digest });
+    }
+
+    if (url.pathname === '/api/voice/session' && req.method === 'POST') {
+      if (!OPENAI_KEY) {
+        return send(res, 400, { error: 'OPENAI_API_KEY is not set — export it and restart to enable voice' });
+      }
+      // Digest + instructions are baked into the ephemeral session at mint
+      // time, so the browser never handles the real API key or the prompt.
+      const instructions = await buildVoiceInstructions();
+      const mint = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${OPENAI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session: {
+            type: 'realtime',
+            model: VOICE_MODEL,
+            instructions,
+            tools: VOICE_TOOLS,
+            audio: { output: { voice: 'marin' } },
+          },
+        }),
+      });
+      const body = await mint.json().catch(() => ({}));
+      if (!mint.ok || !body.value) {
+        const msg = body?.error?.message || `mint failed (HTTP ${mint.status})`;
+        console.error(`  ! voice session mint failed: ${msg}`);
+        return send(res, 502, { error: msg });
+      }
+      console.log(`  voice      session minted (${VOICE_MODEL})`);
+      return send(res, 200, { token: body.value, expiresAt: body.expires_at, model: VOICE_MODEL });
+    }
+
+    if (url.pathname === '/api/voice/scene-code' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req, 1024 * 64)).toString('utf8'));
+      const want = String(body.sceneId || '').trim();
+      const { blocks } = await getProjectDigest();
+      // Accept an id or an exact scene name — the model sees both in the digest.
+      let hit = blocks[want]
+        ? { id: want, ...blocks[want] }
+        : null;
+      if (!hit) {
+        const byName = Object.entries(blocks).find(([, b]) => b.name === want);
+        if (byName) hit = { id: byName[0], ...byName[1] };
+      }
+      if (!hit) return send(res, 404, { error: `no scene matching "${want}"` });
+      return send(res, 200, { id: hit.id, name: hit.name, code: hit.code.slice(0, 30000) });
+    }
+
     if (url.pathname === '/api/refresh' && req.method === 'POST') {
       if (!session.project) return send(res, 400, { error: 'no project id set' });
       const { changed, latest } = await syncLatest({ alsoScenes: true });
@@ -849,6 +1090,13 @@ server.once('error', (err) => {
 
 server.listen(PORT, '127.0.0.1', async () => {
   const addr = `http://localhost:${PORT}`;
+  // A baz render URL names its project — adopt it so the scene map, digest and
+  // note attribution all work from a bare --url. (The stale-mismatch guard has
+  // already run, so this can only agree with the URL.)
+  if (!session.project) {
+    const pid = projectIdFor('', session.url);
+    if (pid) session.project = pid;
+  }
   if (session.project) {
     // Boot sync: scene map + newest completed export. An explicit --url still
     // seeds the starting video, but auto-sync takes over from there.

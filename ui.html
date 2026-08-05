@@ -405,6 +405,11 @@
     color: #0A0A0A;
     animation: micPulse 1.6s ease infinite;
   }
+  /* Speaking: warm, faster pulse. You can interrupt any time — just talk. */
+  #mic.speaking {
+    background: linear-gradient(135deg, #F2A65B 0%, #F2691D 100%);
+    animation: micPulse .7s ease infinite;
+  }
   @keyframes micPulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(95,211,148,.45); }
     50% { box-shadow: 0 0 0 6px rgba(95,211,148,0); }
@@ -1611,6 +1616,27 @@ async function handleVoiceEvent(ev) {
       item: { type: 'function_call_output', call_id: ev.call_id, output },
     });
     vcSend({ type: 'response.create' });
+  } else if (ev.type === 'conversation.item.input_audio_transcription.completed') {
+    // What it ACTUALLY heard. If this doesn't match what you said, the problem
+    // is the mic/VAD — not the model's reasoning.
+    const heard = (ev.transcript || '').trim();
+    vlog('heard: ' + (heard || '(nothing)'));
+    toast('heard: ' + (heard.slice(0, 60) || '(nothing)'));
+  } else if (ev.type === 'conversation.item.input_audio_transcription.failed') {
+    vlog('transcription failed — mic may be sending silence');
+    toast('Heard nothing — check the mic input', true);
+  } else if (ev.type === 'output_audio_buffer.started' || ev.type === 'response.output_audio.delta') {
+    // It's talking — show it, so "is it even listening?" is never a guess.
+    if (vc) micState('live speaking');
+  } else if (
+    ev.type === 'output_audio_buffer.stopped' ||
+    ev.type === 'output_audio_buffer.cleared' ||
+    ev.type === 'response.done'
+  ) {
+    if (vc) micState('live');
+  } else if (ev.type === 'input_audio_buffer.speech_started') {
+    // Your voice cut through — the barge-in worked.
+    if (vc) micState('live');
   } else if (ev.type === 'error') {
     console.warn('voice error', ev);
     vlog('api error: ' + JSON.stringify(ev.error || ev).slice(0, 300));
@@ -1643,10 +1669,39 @@ async function voiceStart() {
 
     let stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Echo cancellation is what lets you interrupt while it's talking: without
+      // it the agent's own voice comes back through your mic, and its VAD hears
+      // itself instead of you. Noise suppression + AGC keep the speech signal
+      // clean enough for the interrupt threshold to trip on the first syllable.
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
+        },
+      });
     } catch {
       throw new Error('Microphone blocked in this browser — open this same URL in Chrome or Safari to talk');
     }
+
+    // Live input meter: proves audio is actually reaching the mic. If this stays
+    // at 0 while you talk, the problem is the device — not the model.
+    try {
+      const ac = new AudioContext();
+      const an = ac.createAnalyser();
+      an.fftSize = 512;
+      ac.createMediaStreamSource(stream).connect(an);
+      const buf = new Uint8Array(an.frequencyBinCount);
+      let peak = 0;
+      const meter = setInterval(() => {
+        if (!vc) { clearInterval(meter); ac.close(); return; }
+        an.getByteFrequencyData(buf);
+        const level = buf.reduce((a, b) => a + b, 0) / buf.length;
+        peak = Math.max(peak * 0.9, level);
+        $('mic').style.setProperty('--lvl', Math.min(1, peak / 40).toFixed(2));
+        window.__micPeak = peak;
+      }, 100);
+    } catch { /* meter is diagnostic only — never block the call */ }
 
     const sess = await fetch('/api/voice/session', { method: 'POST' });
     const sd = await sess.json();

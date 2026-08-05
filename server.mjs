@@ -1052,7 +1052,33 @@ const server = http.createServer(async (req, res) => {
             model: VOICE_MODEL,
             instructions,
             tools: VOICE_TOOLS,
-            audio: { output: { voice: 'marin' } },
+            audio: {
+              // Explicit server VAD so barge-in actually works: the model stops
+              // talking the moment you start. Without an input block the
+              // defaults leave interruption unreliable — you talk over it and
+              // it keeps going. Thresholds tuned for a room with speakers on:
+              // a little less trigger-happy than default so its own voice
+              // leaking back doesn't self-interrupt, but still cuts in fast.
+              input: {
+                format: { type: 'audio/pcm', rate: 24000 },
+                // Transcribe what the model ACTUALLY heard. Without this there
+                // is no record of the heard text, so "it answered something
+                // random" is undiagnosable — you can't tell a mishearing from a
+                // reasoning failure.
+                transcription: { model: 'whisper-1' },
+                turn_detection: {
+                  type: 'semantic_vad',
+                  // Semantic VAD waits for you to actually FINISH a thought
+                  // instead of cutting at a fixed silence gap. A plain
+                  // server_vad with a high threshold clipped the front of
+                  // sentences, so the model answered fragments.
+                  eagerness: 'medium',
+                  interrupt_response: true,
+                  create_response: true,
+                },
+              },
+              output: { voice: 'marin' },
+            },
           },
         }),
       });

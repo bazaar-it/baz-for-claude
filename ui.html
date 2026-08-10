@@ -1703,6 +1703,14 @@ async function voiceStart() {
 
 $('mic').onclick = () => (vc ? voiceStop() : voiceStart());
 
+// Voice review is opt-in. Without OPENAI_API_KEY the mic can only ever throw,
+// so hide it rather than offer a button whose one outcome is an error toast.
+$('mic').style.display = 'none';
+fetch('/api/voice/config')
+  .then((r) => r.json())
+  .then((cfg) => { if (cfg && cfg.available) $('mic').style.display = ''; })
+  .catch(() => { /* stays hidden */ });
+
 // ------------------------------------------------------------- notes list
 async function loadNotes() {
   const { notes } = await (await fetch('/api/notes')).json();
